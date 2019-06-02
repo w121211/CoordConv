@@ -57,7 +57,7 @@ class AddCoords(nn.Module):
             xx_channel = xx_channel.repeat(batch_size_shape, 1, 1, 1)
             yy_channel = yy_channel.repeat(batch_size_shape, 1, 1, 1)
 
-            if torch.cuda.is_available:
+            if torch.cuda.is_available():
                 input_tensor = input_tensor.cuda()
                 xx_channel = xx_channel.cuda()
                 yy_channel = yy_channel.cuda()
