@@ -78,10 +78,7 @@ class hg(nn.Module):
         self.cnvs_   = cnvs_
 
     def forward(self, x):
-        print(x.shape)
         inter = self.pre(x)
-        print(inter.shape)
-
         cnvs  = []
         for ind, (hg_, cnv_) in enumerate(zip(self.hgs, self.cnvs)):
             hg  = hg_(inter)

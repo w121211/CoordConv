@@ -13,8 +13,30 @@ from torchsummary import summary
 
 from coordconv import AddCoords
 
+def norm(x, width):
+    return (int)(x * (width - 1) + 0.5)
 
-def generate_data(datatype="uniform"):
+
+def one_hot(x, y, width=64):
+    z = np.zeros((width, width), dtype=int)
+    z[y][x] = 1
+    # z = z.transpose(1, 0).reshape(width * width)  # (W, H) -> (H, W) -> (H*W)
+    z = z.transpose(1, 0)  # (W, H) -> (H, W)
+    z = np.expand_dims(z, axis=0)
+    return z
+
+
+def l2_distance(x, y, width=64):
+    z = np.zeros((width, width), dtype=float)
+    for (i, j), _ in np.ndenumerate(z):
+        z[i][j] = np.linalg.norm(np.array([x, y]) - np.array([i, j])) / width
+    # z = z.transpose(1, 0).reshape(width * width)  # (W, H) -> (H, W) -> (H*W)
+    z = z.transpose(1, 0)  # (W, H) -> (H, W)
+    z = np.expand_dims(z, axis=0)
+    return z
+
+
+def generate_data(datatype="uniform", width=3):
     print('Generating datasets...')
     assert datatype in ["uniform", "quadrant"]
 
@@ -24,21 +46,30 @@ def generate_data(datatype="uniform"):
     if not os.path.exists("data-quadrant/"):
         os.makedirs("data-quadrant/")
 
-    onehots = np.pad(
-        np.eye(3136, dtype="float32").reshape((3136, 56, 56, 1)),
-        ((0, 0), (4, 4), (4, 4), (0, 0)),
-        mode="constant",
-    )
-    onehots = onehots.transpose(0, 3, 1, 2)  # (N, C, H, W)
-    
-    onehots_tensor = torch.from_numpy(onehots)
-    conv_layer = nn.Conv2d(
-        in_channels=1, out_channels=1, kernel_size=(9, 9), padding=4, stride=1
-    )
-    w = torch.ones(1, 1, 9, 9)
-    conv_layer.weight.data = w
-    images_tensor = conv_layer(onehots_tensor)
-    images = images_tensor.detach().numpy()
+    # onehots = np.pad(
+    #     np.eye(3136, dtype="float32").reshape((3136, 56, 56, 1)),
+    #     ((0, 0), (4, 4), (4, 4), (0, 0)),
+    #     mode="constant",
+    # )
+    # onehots = onehots.transpose(0, 3, 1, 2)  # (N, C, H, W)
+    # onehots_tensor = torch.from_numpy(onehots)
+    # conv_layer = nn.Conv2d(
+    #     in_channels=1, out_channels=1, kernel_size=(9, 9), padding=4, stride=1
+    # )
+    # w = torch.ones(1, 1, 9, 9)
+    # conv_layer.weight.data = w
+    # images_tensor = conv_layer(onehots_tensor)
+    # images = images_tensor.detach().numpy()
+
+    onehots = []
+    dist = []
+    for i in range(width):
+        for j in range(width):
+            x = one_hot(i, j, width)
+            onehots.append(x)
+            dist.append(l2_distance(i, j, width))
+    onehots = np.stack(onehots)
+    dist = np.stack(dist)
 
     if datatype == "uniform":
         # Create the uniform datasets
@@ -46,9 +77,9 @@ def generate_data(datatype="uniform"):
         train, test = train_test_split(indices, test_size=0.2, random_state=0)
 
         train_onehot = onehots[train]
-        train_images = images[train]
+        train_images = dist[train]
         test_onehot = onehots[test]
-        test_images = images[test]
+        test_images = dist[test]
 
         np.save("data-uniform/train_onehot.npy", train_onehot)
         np.save("data-uniform/train_images.npy", train_images)
@@ -99,7 +130,26 @@ def generate_data(datatype="uniform"):
         np.save("data-quadrant/test_images.npy", test_images)
 
 
-def load_data(datatype="uniform"):
+def load_data():
+    train_x = np.load("data-uniform/train_onehot.npy").astype("float32")
+    train_im = np.load("data-uniform/train_images.npy").astype("float32")
+    test_x = np.load("data-uniform/test_onehot.npy").astype("float32")
+    test_im = np.load("data-uniform/test_images.npy").astype("float32")
+
+    # print("Train set : ", train_set.shape, train_set.max(), train_set.min())
+    # print("Test set : ", test_set.shape, test_set.max(), test_set.min())
+
+    # Visualize the datasets
+    # plt.imshow(np.sum(train_onehot, axis=0)[0, :, :], cmap="gray")
+    # plt.title("Train One-hot dataset")
+    # plt.show()
+    # plt.imshow(np.sum(test_onehot, axis=0)[0, :, :], cmap="gray")
+    # plt.title("Test One-hot dataset")
+    # plt.show()
+
+    return train_im, train_x, test_im, test_x
+
+def _load_data(datatype="uniform"):
     if datatype == "uniform":
         # Load the one hot datasets
         train_onehot = np.load("data-uniform/train_onehot.npy").astype("float32")
@@ -192,6 +242,8 @@ def train(epoch, net, train_dataloader, optimizer, loss_fn, device):
             flush=True,
         )
     print("")
+    # print(output)
+    # print(target)
 
 
 class Net(nn.Module):
@@ -223,6 +275,45 @@ class Net(nn.Module):
         return x
 
 
+class OnehotNet(nn.Module):
+    def __init__(self, width=3):
+        super(OnehotNet, self).__init__()
+        self.width = width
+        # self.add_coords = AddCoords(rank=2)
+        self.conv1 = nn.Conv2d(1, 4, 3, padding=1)
+        self.conv2 = nn.Conv2d(4, 1, 3, padding=1)
+        self.fc1 = nn.Linear(9, 16)
+        self.fc2 = nn.Linear(16, 16)
+        self.fc3 = nn.Linear(16, 16)
+        self.fc4 = nn.Linear(16, 9)
+        # self.conv3 = nn.Conv2d(16, 8, 3, padding=1)
+        # self.conv4 = nn.Conv2d(8, 1, 3, padding=1)
+
+        # self.bn1 = nn.BatchNorm2d(1)
+        # self.conv2 = nn.Conv2d(8, 16, 3, padding=1)
+        # self.conv3 = nn.Conv2d(16, 1, 3, padding=1)
+        # self.conv5 = nn.Conv2d(1, 1, 1)
+
+    def forward(self, x):
+        # x = self.add_coords(x)
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        # x = F.relu(self.conv3(x))
+        # x = F.relu(self.conv4(x))
+        # x = self.bn1(x)
+        # x = F.relu(self.conv1(x))
+        
+        # x = F.relu(self.conv3(x))
+        # x = self.conv5(x)
+        x = x.view(-1, self.width ** 2)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = F.relu(self.fc3(x))
+        x = self.fc4(x)
+        x = x.view(-1, self.width, self.width)
+        return x
+
+
 if __name__ == "__main__":
     np.random.seed(0)
     torch.manual_seed(0)
@@ -230,16 +321,16 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # prepare dataset
+    width = 3
     datatype = "uniform"
-    # generate_data(datatype)
-    train_set, test_set, train_onehot, test_onehot = load_data(datatype)
+    generate_data(datatype, width)
+    train_im, train_x, test_im, test_x = load_data()
+    print(train_im.shape)
+    print(train_x.shape)
 
-    # train_tensor_x = torch.stack([torch.Tensor(i) for i in train_set])
-    # train_tensor_y = torch.stack([torch.Tensor(i) for i in train_onehot])
-    train_tensor_x = torch.from_numpy(train_set)  # coordinates
-    train_tensor_y = torch.from_numpy(train_onehot)  # onehot-images
-    print(train_tensor_x[0])
-    train_dataset = utils.TensorDataset(train_tensor_y, train_tensor_x)
+    train_tensor_im = torch.from_numpy(train_im)  # coordinates
+    train_tensor_x = torch.from_numpy(train_x)  # onehot-images
+    train_dataset = utils.TensorDataset(train_tensor_x, train_tensor_im)
     train_dataloader = utils.DataLoader(train_dataset, batch_size=32, shuffle=True)
 
     # test_tensor_x = torch.stack([torch.Tensor(i) for i in test_set])
@@ -247,11 +338,11 @@ if __name__ == "__main__":
     # test_dataset = utils.TensorDataset(test_tensor_y, test_tensor_x)
     # test_dataloader = utils.DataLoader(test_dataset, batch_size=32, shuffle=False)
 
-    net = Net().to(device)
+    net = OnehotNet(width).to(device)
     # summary(net, input_size=(1, 64, 64))
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
     loss_fn = nn.MSELoss()
-    epochs = 100
+    epochs = 1000
 
     for epoch in range(1, epochs + 1):
         train(epoch, net, train_dataloader, optimizer, loss_fn, device)

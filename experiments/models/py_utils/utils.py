@@ -19,8 +19,8 @@ def _nms(heat, kernel=1):
     return heat * keep
 
 def _tranpose_and_gather_feat(feat, ind):
-    feat = feat.permute(0, 2, 3, 1).contiguous()
-    feat = feat.view(feat.size(0), -1, feat.size(3))
+    feat = feat.permute(0, 2, 3, 1).contiguous()  # (N, C, H, W) -> (N, H, W, C)
+    feat = feat.view(feat.size(0), -1, feat.size(3))  # (N, H*W, C)
     feat = _gather_feat(feat, ind)
     return feat
 
