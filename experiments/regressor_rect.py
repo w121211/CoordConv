@@ -15,8 +15,9 @@ from sklearn.model_selection import train_test_split
 from coordconv import AddCoords
 from hrnet import HighResolutionNet
 from config import get_cfg_defaults
-from models.CornerNet_Squeeze import corner_pool
-from models.py_utils import TopPool, LeftPool
+
+# from models.CornerNet_Squeeze import corner_pool
+# from models.py_utils import TopPool, LeftPool
 
 
 def norm(x, width):
@@ -96,40 +97,44 @@ def generate_data(width=64, n_sample=1000):
     for _x in _xs:
         # _im = draw_rect_np(_x, width)
         _im = draw_rect_pil(_x, width)
-        _dist = draw_l2_distance(x0, y0, width)
+        #         _dist = draw_l2_distance(x0, y0, width)
         im.append(_im)
         _x = _x.astype(float) / width
         x.append(_x)
-        dist.append(_dist)
+    #         dist.append(_dist)
 
     x = np.stack(x)
     im = np.stack(im)  # (N, W, H)
     im = np.expand_dims(im, axis=-1)
     # im = im.transpose(0, 3, 1, 2)  # (N, H, W, C) -> (N, C, H, W)  only when PIL.Image
     im = im.transpose(0, 3, 2, 1)  # (N, W, H, C) -> (N, C, H, W)
-    dist = np.stack(dist)
-    dist = np.expand_dims(dist, axis=-1)
-    dist = dist.transpose(0, 3, 2, 1)  # (N, H, W, C) -> (N, C, H, W)
+    #     dist = np.stack(dist)
+    #     dist = np.expand_dims(dist, axis=-1)
+    #     dist = dist.transpose(0, 3, 2, 1)  # (N, H, W, C) -> (N, C, H, W)
 
     indices = np.arange(0, len(x), dtype="int32")
     train, test = train_test_split(indices, test_size=0.2, random_state=0)
 
     np.save("data-rect/train_x.npy", x[train])
     np.save("data-rect/train_images.npy", im[train])
-    np.save("data-rect/train_dist.npy", dist[train])
+    #     np.save("data-rect/train_dist.npy", dist[train])
     np.save("data-rect/test_x.npy", x[test])
     np.save("data-rect/test_images.npy", im[test])
-    np.save("data-rect/test_dist.npy", dist[test])
+
+
+#     np.save("data-rect/test_dist.npy", dist[test])
 
 
 def load_data():
     print("loading data...")
     train_x = np.load("data-rect/train_x.npy").astype("float32")
     train_im = np.load("data-rect/train_images.npy").astype("float32")
-    train_dist = np.load("data-rect/train_dist.npy").astype("float32")
+    #     train_dist = np.load("data-rect/train_dist.npy").astype("float32")
+    train_dist = None
     test_x = np.load("data-rect/test_x.npy").astype("float32")
     test_im = np.load("data-rect/test_images.npy").astype("float32")
-    test_dist = np.load("data-rect/test_dist.npy").astype("float32")
+    #     test_dist = np.load("data-rect/test_dist.npy").astype("float32")
+    test_dist = None
 
     # print("Train set : ", train_set.shape, train_set.max(), train_set.min())
     # print("Test set : ", test_set.shape, test_set.max(), test_set.min())
@@ -216,19 +221,21 @@ class SimpleNet(nn.Module):
 
 
 class HRNet(nn.Module):
-    def __init__(self):
+    def __init__(self, width):
         super(HRNet, self).__init__()
         cfg = get_cfg_defaults()
         cfg.merge_from_file("./experiments/exp.yaml")
         self.hr = HighResolutionNet(cfg)
         self.add_coords = AddCoords(rank=2)
-        self.conv5 = nn.Conv2d(6, 6, 3, padding=1)
-        self.conv6 = nn.Conv2d(6, 6, 3, padding=1)
-        self.conv7 = nn.Conv2d(6, 4, 1)
-        self.pool = nn.MaxPool2d(16, stride=16)
+        self.conv5 = nn.Conv2d(7, 7, 3, padding=1)
+        self.conv6 = nn.Conv2d(7, 7, 3, padding=1)
+        self.conv7 = nn.Conv2d(7, 4, 1)
+        self.pool = nn.MaxPool2d(width, stride=width)
 
     def forward(self, x):
-        x = self.hr(x)
+        x1 = self.hr(x)
+        x1 = F.interpolate(x1, scale_factor=4)
+        x = torch.cat((x, x1), dim=1)
         x = self.add_coords(x)
         x = F.relu(self.conv5(x))
         x = F.relu(self.conv6(x))
@@ -245,11 +252,11 @@ def train(epoch, net, train_dataloader, optimizer, loss_fn, device):
         x, y_target = x.to(device), y_target.to(device)
         optimizer.zero_grad()
         y = net(x)
-        loss = loss_fn(y, y_target)
         # print('-------')
-        # print(x.shape)
-        # print(y.shape)
-        # print(y_target)
+        #         print(x.shape)
+        #         print(y.shape)
+        #         print(y_target)
+        loss = loss_fn(y, y_target)
         loss.backward()
         optimizer.step()
         iters += len(x)
@@ -276,15 +283,15 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # prepare dataset
-    width = 64
-    # generate_data(width)
+    width = 512
+    generate_data(width)
     train_x, train_im, train_dist, test_x, test_im, test_dist = load_data()
     train_tensor_x = torch.from_numpy(train_x)
     train_tensor_im = torch.from_numpy(train_im)
     # train_tensor_dist = torch.from_numpy(train_dist)
 
     train_dataset = utils.TensorDataset(train_tensor_im, train_tensor_x)
-    train_dataloader = utils.DataLoader(train_dataset, batch_size=64, shuffle=True)
+    train_dataloader = utils.DataLoader(train_dataset, batch_size=16, shuffle=True)
 
     # test_tensor_x = torch.stack([torch.Tensor(i) for i in test_set])
     # test_tensor_y = torch.stack([torch.LongTensor(i) for i in test_onehot])
@@ -296,7 +303,7 @@ if __name__ == "__main__":
         return nn.CrossEntropyLoss()(input, labels)
 
     # model = SimpleNet(width).to(device)
-    model = HRNet().to(device)
+    model = HRNet(width).to(device)
     # summary(model, input_size=(1, 64, 64))
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     loss_fn = nn.MSELoss()

@@ -260,7 +260,7 @@ class HighResolutionNet(nn.Module):
         super(HighResolutionNet, self).__init__()
 
         # stem net
-        self.conv1 = nn.Conv2d(1, 64, kernel_size=3, stride=2, padding=1,
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1,
                                bias=False)
         self.bn1 = BatchNorm2d(64, momentum=BN_MOMENTUM)
         self.conv2 = nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1,
@@ -441,7 +441,7 @@ class HighResolutionNet(nn.Module):
         x2 = F.interpolate(x[2], size=(height, width), mode='bilinear', align_corners=False)
         x3 = F.interpolate(x[3], size=(height, width), mode='bilinear', align_corners=False)
         x = torch.cat([x[0], x1, x2, x3], 1)
-        x = self.head(x)
+        # x = self.head(x)
 
         return x
 
