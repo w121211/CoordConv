@@ -124,19 +124,19 @@ dataloader = torch.utils.data.DataLoader(
 
 def train_renderer():
     net = FCN(in_dim=4)
+    # net = Generator(in_dim=4)
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
     criterion = torch.nn.MSELoss()
     if cuda:
         net.cuda()
 
     for epoch in range(opt.n_epochs):
-        # for i, (imgs) in enumerate(dataloader):
         for i, (gt, x) in enumerate(dataloader):
+            if cuda:
+                gt = gt.cuda()
+                x = x.cuda()
             net.train()
             y = net(x)
-            # print(x[0])
-            # print(gt[0])
-            # print(y[0])
             optimizer.zero_grad()
             loss = criterion(y, gt)
             loss.backward()
@@ -144,8 +144,14 @@ def train_renderer():
 
             if i % 1 == 0:
                 print(epoch, i, loss.item())
+                # print(x[0])
+                # print(gt[0])
+                # print(y[0])
+                # save_image(gt.data[:25], "images/%d.png" % epoch, nrow=5, normalize=True)
+                # save_image(y.data[:25], "images/%d.png" % epoch, nrow=5, normalize=True)
 
-        if epoch % 10 == 0 and epoch > 0:
+        # if epoch % 10 == 0 and epoch > 0:
+        if epoch % 1 == 0:
             # torch.save(net.state_dict(), "saved_models/layout/renderer.pth")
             save_image(y.data[:25], "images/%d.png" % epoch, nrow=5, normalize=True)
 
