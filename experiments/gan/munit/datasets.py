@@ -37,18 +37,15 @@ class MultiImageDataset(Dataset):
 
 
 class ImageDataset(Dataset):
-    def __init__(self, root, transforms_=None):
+    def __init__(self, root,  transforms_=None):
         self.transform = transforms.Compose(transforms_)
-
-        self.files = sorted(glob.glob(root + "/*.*"))
-        # if mode == "train":
-        #     self.files.extend(sorted(glob.glob(os.path.join(root, "test") + "/*.*")))
+        self.files = sorted(glob.glob(root + "/*.png"))
+        self.targets = np.load(os.path.join(root, "x.npy")).astype(np.float32)
 
     def __getitem__(self, index):
-        # im = Image.open(self.files[index % len(self.files)])
         im = Image.open(self.files[index % len(self.files)])
         im = self.transform(im)
-        target = 0
+        target = self.targets[index]
         return im, target
 
     def __len__(self):

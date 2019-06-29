@@ -14,6 +14,7 @@ from torch.autograd import Variable
 
 from models import Discriminator, Generator, FCN, compute_gradient_penalty
 from datasets import generate_real_samples, ImageDataset
+from strokes import sampler, draw_rect
 
 cuda = True if torch.cuda.is_available() else False
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
@@ -68,12 +69,13 @@ opt = parser.parse_args()
 print(opt)
 
 os.makedirs("images", exist_ok=True)
+os.makedirs("data/layout/", exist_ok=True)
+os.makedirs("saved_models/layout", exist_ok=True)
 img_shape = (opt.channels, opt.img_size, opt.img_size)
 # img_shape = (1, 64, 64)
 
 # Configure data loader
-# os.makedirs("../../data/mnist", exist_ok=True)
-# generate_real_samples(save_path="data/layout/")
+# sampler(draw_rect, n_samples=100, save_path="data/layout/")
 dataloader = torch.utils.data.DataLoader(
     ImageDataset(
         "data/layout/",
@@ -86,6 +88,21 @@ dataloader = torch.utils.data.DataLoader(
     batch_size=opt.batch_size,
     shuffle=True,
 )
+
+# os.makedirs("../../data/mnist", exist_ok=True)
+# generate_real_samples(save_path="data/layout/")
+# dataloader = torch.utils.data.DataLoader(
+#     ImageDataset(
+#         "data/layout/",
+#         transforms_=[
+#             # transforms.Resize(opt.img_size),
+#             transforms.ToTensor(),
+#             transforms.Normalize([0.5], [0.5]),
+#         ],
+#     ),
+#     batch_size=opt.batch_size,
+#     shuffle=True,
+# )
 # dataloader = torch.utils.data.DataLoader(
 #     datasets.MNIST(
 #         "data/mnist",
@@ -106,65 +123,31 @@ dataloader = torch.utils.data.DataLoader(
 
 
 def train_renderer():
-    net = FCN()
-
+    net = FCN(in_dim=4)
+    optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
+    criterion = torch.nn.MSELoss()
     if cuda:
         net.cuda()
 
-    optimizer = torch.optim.Adam(net.parameters(), lr=3e-6)
-    criterion = torch.nn.MSELoss()
-
-    for step in range(10000):
-        net.train()
-        x = []
-        gt = []
-
-        # generate ground truth data
-        for i in range(opt.batch_size):
-            # _x = np.random.uniform(0, 1, action_dim)
-            _x = np.array([0, 0, 0.5, 0.5])
-            x.append(_x)
-            gt.append(draw_fn(_x))
-
-        x = torch.tensor(x).float()
-        gt = torch.tensor(gt).float()
-        if use_cuda:
-            net = net.cuda()
-            x = x.cuda()
-            gt = gt.cuda()
-
-        y = net(x)
-        # print(gt)
-        # print(y)
-        optimizer.zero_grad()
-        loss = criterion(y, gt)
-        loss.backward()
-        optimizer.step()
-        if step % 100 == 0:
-            print(step, loss.item())
-
-        # if step < 200000:
-        #     lr = 1e-4
-        # elif step < 400000:
-        #     lr = 1e-5
-        # else:
-        #     lr = 1e-6
-        # for param_group in optimizer.param_groups:
-        #     param_group["lr"] = lr
-        writer.add_scalar("train/loss", loss.item(), step)
-
-        if step % 1000 == 0:
-            save_model(net, output, use_cuda)
-
-            net.eval()
+    for epoch in range(opt.n_epochs):
+        # for i, (imgs) in enumerate(dataloader):
+        for i, (gt, x) in enumerate(dataloader):
+            net.train()
             y = net(x)
+            # print(x[0])
+            # print(gt[0])
+            # print(y[0])
+            optimizer.zero_grad()
             loss = criterion(y, gt)
-            writer.add_scalar("val/loss", loss.item(), step)
-            for i in range(32):
-                G = y[i].cpu().data.numpy()
-                GT = gt[i].cpu().data.numpy()
-                writer.add_image("train/gen{}.png".format(i), G, step)
-                writer.add_image("train/ground_truth{}.png".format(i), GT, step)
+            loss.backward()
+            optimizer.step()
+
+            if i % 1 == 0:
+                print(epoch, i, loss.item())
+
+        if epoch % 10 == 0 and epoch > 0:
+            # torch.save(net.state_dict(), "saved_models/layout/renderer.pth")
+            save_image(y.data[:25], "images/%d.png" % epoch, nrow=5, normalize=True)
 
 
 def train_wgan():
@@ -269,4 +252,5 @@ def train_wgan():
                 batches_done += opt.n_critic
 
 
-train_wgan()
+# train_wgan()
+train_renderer()
