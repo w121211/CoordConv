@@ -83,7 +83,7 @@ def draw_rect(xy=None, width=128, height=128):
         # space = fake.pyint(min=2, max=4)
         n_circles = 1
         space = 0
-        radius = fake.pyint(min=30, max=60)
+        radius = fake.pyint(min=40, max=40)
         x0 = fake.pyint(min=0, max=width - 1 - (n_circles * (radius + space)))
         y0 = fake.pyint(min=0, max=height - 1 - radius)
         x1 = x0 + radius

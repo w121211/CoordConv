@@ -5,7 +5,7 @@ import torch
 import torch.autograd as autograd
 from torch.autograd import Variable
 
-from coordconv import CoordConv2d
+from coordconv import AddCoords
 
 
 def weights_init_normal(m):
@@ -19,13 +19,17 @@ def weights_init_normal(m):
 
 class LambdaLR:
     def __init__(self, n_epochs, offset, decay_start_epoch):
-        assert (n_epochs - decay_start_epoch) > 0, "Decay must start before the training session ends!"
+        assert (
+            n_epochs - decay_start_epoch
+        ) > 0, "Decay must start before the training session ends!"
         self.n_epochs = n_epochs
         self.offset = offset
         self.decay_start_epoch = decay_start_epoch
 
     def step(self, epoch):
-        return 1.0 - max(0, epoch + self.offset - self.decay_start_epoch) / (self.n_epochs - self.decay_start_epoch)
+        return 1.0 - max(0, epoch + self.offset - self.decay_start_epoch) / (
+            self.n_epochs - self.decay_start_epoch
+        )
 
 
 #################################
@@ -34,9 +38,13 @@ class LambdaLR:
 
 
 class Encoder(nn.Module):
-    def __init__(self, in_channels=3, dim=64, n_residual=3, n_downsample=2, style_dim=8):
+    def __init__(
+        self, in_channels=3, dim=64, n_residual=3, n_downsample=2, style_dim=8
+    ):
         super(Encoder, self).__init__()
-        self.content_encoder = ContentEncoder(in_channels, dim, n_residual, n_downsample)
+        self.content_encoder = ContentEncoder(
+            in_channels, dim, n_residual, n_downsample
+        )
         self.style_encoder = StyleEncoder(in_channels, dim, n_downsample, style_dim)
 
     def forward(self, x):
@@ -154,16 +162,26 @@ class StyleEncoder(nn.Module):
         super(StyleEncoder, self).__init__()
 
         # Initial conv block
-        layers = [nn.ReflectionPad2d(3), nn.Conv2d(in_channels, dim, 7), nn.ReLU(inplace=True)]
+        layers = [
+            nn.ReflectionPad2d(3),
+            nn.Conv2d(in_channels, dim, 7),
+            nn.ReLU(inplace=True),
+        ]
 
         # Downsampling
         for _ in range(2):
-            layers += [nn.Conv2d(dim, dim * 2, 4, stride=2, padding=1), nn.ReLU(inplace=True)]
+            layers += [
+                nn.Conv2d(dim, dim * 2, 4, stride=2, padding=1),
+                nn.ReLU(inplace=True),
+            ]
             dim *= 2
 
         # Downsampling with constant depth
         for _ in range(n_downsample - 2):
-            layers += [nn.Conv2d(dim, dim, 4, stride=2, padding=1), nn.ReLU(inplace=True)]
+            layers += [
+                nn.Conv2d(dim, dim, 4, stride=2, padding=1),
+                nn.ReLU(inplace=True),
+            ]
 
         # Average pool and output layer
         layers += [nn.AdaptiveAvgPool2d(1), nn.Conv2d(dim, style_dim, 1, 1, 0)]
@@ -223,7 +241,9 @@ class MultiDiscriminator(nn.Module):
                 ),
             )
 
-        self.downsample = nn.AvgPool2d(in_channels, stride=2, padding=[1, 1], count_include_pad=False)
+        self.downsample = nn.AvgPool2d(
+            in_channels, stride=2, padding=[1, 1], count_include_pad=False
+        )
 
     def compute_loss(self, x, gt):
         """Computes the MSE between model output and scalar gt"""
@@ -295,7 +315,14 @@ class AdaptiveInstanceNorm2d(nn.Module):
         x_reshaped = x.contiguous().view(1, b * c, h, w)
 
         out = F.batch_norm(
-            x_reshaped, running_mean, running_var, self.weight, self.bias, True, self.momentum, self.eps
+            x_reshaped,
+            running_mean,
+            running_var,
+            self.weight,
+            self.bias,
+            True,
+            self.momentum,
+            self.eps,
         )
 
         return out.view(b, c, h, w)
@@ -326,13 +353,14 @@ class LayerNorm(nn.Module):
             x = x * self.gamma.view(*shape) + self.beta.view(*shape)
         return x
 
+
 ##############################
 #        WGAN
 ##############################
 
 cuda = True if torch.cuda.is_available() else False
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
-img_shape = (1, 64, 64)
+
 
 class Generator(nn.Module):
     def __init__(self, in_dim=100):
@@ -367,7 +395,6 @@ class Generator(nn.Module):
 class Discriminator(nn.Module):
     def __init__(self):
         super(Discriminator, self).__init__()
-        
 
         self.model = nn.Sequential(
             nn.Linear(int(np.prod(img_shape)), 512),
@@ -411,22 +438,82 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
 #        Renderer
 ##############################
 
-# class FCN(nn.Module):
-#     def __init__(self, in_dim=4):
-#         super(FCN, self).__init__()
-#         self.coordconv = CoordConv2d(in_dim, 32, 1, with_r=True)
-#         self.conv1 = nn.Conv2d(32, 64, 1)
-#         self.conv2 = nn.Conv2d(64, 64, 1)
-#         self.conv3 = nn.Conv2d(64,  1, 1)
-#         self.conv4 = nn.Conv2d( 1,  1, 1)
+img_shape = (1, 128, 128)  # (C, H, W)
 
-#     def forward(self, x):
-#         x = self.coordconv(x)
-#         x = F.relu(self.conv1(x))
-#         x = F.relu(self.conv2(x))
-#         x = F.relu(self.conv3(x))
-#         x = self.conv4(x)
-#         return x.view(-1, 1, 64, 64)
+
+class MPN(nn.Module):
+    def __init__(self, in_dim=4):
+        super(FCN, self).__init__()
+
+        def block(in_feat, out_feat, normalize=True):
+            layers = [nn.Linear(in_feat, out_feat)]
+            if normalize:
+                layers.append(nn.BatchNorm1d(out_feat, 0.8))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            return layers
+
+        self.model = nn.Sequential(
+            *block(in_dim, 128, normalize=False),
+            *block(128, 128),
+            *block(128, 256),
+            *block(256, 512),
+            *block(512, 1024),
+            *block(1024, 2048),
+            *block(2048, 4096),
+            nn.Linear(4096, int(np.prod(img_shape))),
+            nn.Tanh()
+        )
+
+    def forward(self, x):
+        x = self.model(x)
+        return x.view(-1, *img_shape)
+
+
+class TileLayer(nn.Module):
+    def __init__(self, in_dim, width, height):
+        super(TileLayer, self).__init__()
+        self.in_dim = in_dim
+        self.width = width
+        self.height = height
+
+    def forward(self, x):
+        # input: (N, in_dim)
+        # (N, H, W, C) -> (N, C, H, W)
+        x = (
+            x.view(-1, self.in_dim, 1)
+            .repeat(1, 1, self.width * self.height)
+            .view(-1, self.height, self.width, self.in_dim)
+            .permute(0, 3, 1, 2)
+        )
+        return x
+
+
+class CoordConvPainter(nn.Module):
+    def __init__(self, in_dim):
+        super(CoordConvPainter, self).__init__()
+
+        def block(in_channel, out_channel, activate=True):
+            layers = [nn.Conv2d(in_channel, out_channel, 1, stride=1, padding=0)]
+            if activate:
+                layers += [nn.ReLU(inplace=True)]
+            return layers
+
+        self.model = nn.Sequential(
+            TileLayer(in_dim, width=img_shape[1], height=img_shape[2]),
+            AddCoords(rank=2),
+            *block(6, 32),
+            *block(32, 32),
+            *block(32, 64),
+            *block(64, 64),
+            *block(64, 64, activate=False),
+            *block(64, 1, activate=False),
+            nn.Tanh()
+        )
+
+    def forward(self, x):
+        x = self.model(x)
+        # return x.view(-1, *img_shape)
+        return x
 
 
 class FCN(nn.Module):
@@ -436,6 +523,7 @@ class FCN(nn.Module):
         self.fc2 = (nn.Linear(512, 1024))
         self.fc3 = (nn.Linear(1024, 2048))
         self.fc4 = (nn.Linear(2048, 4096))
+        
         self.conv1 = (nn.Conv2d(16, 32, 3, 1, 1))
         self.conv2 = (nn.Conv2d(32, 32, 3, 1, 1))
         self.conv3 = (nn.Conv2d(8, 16, 3, 1, 1))
@@ -443,6 +531,10 @@ class FCN(nn.Module):
         self.conv5 = (nn.Conv2d(4, 8, 3, 1, 1))
         self.conv6 = (nn.Conv2d(8, 4, 3, 1, 1))
         self.pixel_shuffle = nn.PixelShuffle(2)
+        
+        self.coord = AddCoords(rank=2)
+        self.conv7 = nn.Conv2d(3, 3, 1, 1, 0)
+        self.conv8 = nn.Conv2d(3, 1, 1, 1, 0)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
@@ -455,8 +547,13 @@ class FCN(nn.Module):
         x = F.relu(self.conv3(x))
         x = self.pixel_shuffle(self.conv4(x))
         x = F.relu(self.conv5(x))
-        x = self.pixel_shuffle(self.conv6(x))
+        x = self.pixel_shuffle(self.conv6(x))  # (N, 1, 128, 128)
+        
+        # x = self.coord(x)  # (N, 3, 128, 128)
+        # x = self.conv7(x)
+        # x = self.conv8(x)
+
         # x = torch.sigmoid(x)
         x = F.tanh(x)
-        # return 1 - x.view(-1, 128, 128)
+        # print(x.shape)
         return x.view(-1, 1, 128, 128)

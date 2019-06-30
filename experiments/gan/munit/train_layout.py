@@ -12,7 +12,13 @@ from torch.utils.data import DataLoader
 from torchvision import datasets
 from torch.autograd import Variable
 
-from models import Discriminator, Generator, FCN, compute_gradient_penalty
+from models import (
+    Discriminator,
+    Generator,
+    compute_gradient_penalty,
+    CoordConvPainter,
+    FCN,
+)
 from datasets import generate_real_samples, ImageDataset
 from strokes import sampler, draw_rect
 
@@ -75,7 +81,7 @@ img_shape = (opt.channels, opt.img_size, opt.img_size)
 # img_shape = (1, 64, 64)
 
 # Configure data loader
-# sampler(draw_rect, n_samples=100, save_path="data/layout/")
+sampler(draw_rect, n_samples=100, save_path="data/layout/")
 dataloader = torch.utils.data.DataLoader(
     ImageDataset(
         "data/layout/",
@@ -123,10 +129,11 @@ dataloader = torch.utils.data.DataLoader(
 
 
 def train_renderer():
+    # net = CoordConvPainter(in_dim=4)
     net = FCN(in_dim=4)
-    # net = Generator(in_dim=4)
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
     criterion = torch.nn.MSELoss()
+
     if cuda:
         net.cuda()
 
@@ -144,7 +151,7 @@ def train_renderer():
 
             if i % 1 == 0:
                 print(epoch, i, loss.item())
-                # print(x[0])
+                print(x[0])
                 # print(gt[0])
                 # print(y[0])
                 # save_image(gt.data[:25], "images/%d.png" % epoch, nrow=5, normalize=True)
