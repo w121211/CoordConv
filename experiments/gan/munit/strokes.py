@@ -77,13 +77,13 @@ def draw_textbox(x, width=64):
 #     return canvas.astype(int), x
 
 
-def draw_rect(xy=None, width=128, height=128):
+def draw_rect(xy=None, width=64, height=64):
     if xy is None:
         # n_circles = fake.pyint(min=1, max=1)
         # space = fake.pyint(min=2, max=4)
         n_circles = 1
         space = 0
-        radius = fake.pyint(min=40, max=40)
+        radius = fake.pyint(min=20, max=20)
         x0 = fake.pyint(min=0, max=width - 1 - (n_circles * (radius + space)))
         y0 = fake.pyint(min=0, max=height - 1 - radius)
         x1 = x0 + radius
@@ -103,10 +103,25 @@ def draw_rect(xy=None, width=128, height=128):
     return xy, im
 
 
-def sampler(draw_fn, n_samples=10000, save_path="data/layout/"):
-    x = []
+def sampler(draw_fn, n_samples=10000, save_path=None):
+    transform = transforms.Compose(
+        [transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
+    )
+
+    x, im = [], []
     for i in range(n_samples):
         _x, _im = draw_fn()
         x.append(_x)
-        _im.save(os.path.join(save_path, "%d.png" % (i)), "PNG")
-    np.save(os.path.join(save_path, "x.npy"), np.stack(x))
+        if save_path is not None:
+            _im.save(os.path.join(save_path, "%d.png" % (i)), "PNG")
+        else:
+            im.append(transform(_im))
+
+    x = np.stack(x)
+    if save_path is not None:
+        np.save(os.path.join(save_path, "x.npy"), x)
+    else:
+        im = torch.stack(im)
+
+    return x, im
+

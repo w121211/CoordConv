@@ -1,3 +1,4 @@
+# %%writefile /content/CoordConv/experiments/gan/munit/train_layout.py
 import argparse
 import os
 import numpy as np
@@ -95,42 +96,10 @@ dataloader = torch.utils.data.DataLoader(
     shuffle=True,
 )
 
-# os.makedirs("../../data/mnist", exist_ok=True)
-# generate_real_samples(save_path="data/layout/")
-# dataloader = torch.utils.data.DataLoader(
-#     ImageDataset(
-#         "data/layout/",
-#         transforms_=[
-#             # transforms.Resize(opt.img_size),
-#             transforms.ToTensor(),
-#             transforms.Normalize([0.5], [0.5]),
-#         ],
-#     ),
-#     batch_size=opt.batch_size,
-#     shuffle=True,
-# )
-# dataloader = torch.utils.data.DataLoader(
-#     datasets.MNIST(
-#         "data/mnist",
-#         train=True,
-#         download=True,
-#         transform=transforms.Compose(
-#             [
-#                 transforms.Resize(opt.img_size),
-#                 transforms.ToTensor(),
-#                 transforms.Normalize([0.5], [0.5]),
-#             ]
-#             # [transforms.Resize(opt.img_size), transforms.ToTensor()]
-#         ),
-#     ),
-#     batch_size=opt.batch_size,
-#     shuffle=True,
-# )
-
 
 def train_renderer():
     # net = CoordConvPainter(in_dim=4)
-    net = FCN(in_dim=4)
+    net = FCN(in_dim=opt.latent_dim)
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
     criterion = torch.nn.MSELoss()
 
@@ -168,8 +137,9 @@ def train_wgan():
     lambda_gp = 10
 
     # Initialize generator and discriminator
-    generator = Generator()
+    generator = Generator(opt.latent_dim)
     discriminator = Discriminator()
+    g_criterion = torch.nn.MSELoss()
 
     if cuda:
         generator.cuda()
@@ -188,7 +158,6 @@ def train_wgan():
     for epoch in range(opt.n_epochs):
         # for i, (imgs) in enumerate(dataloader):
         for i, (imgs, _) in enumerate(dataloader):
-            # Configure input
             real_imgs = Variable(imgs.type(Tensor))
 
             # ---------------------
@@ -205,40 +174,31 @@ def train_wgan():
             # Generate a batch of images
             fake_imgs = generator(z)
 
-            # Real images
             real_validity = discriminator(real_imgs)
-            # Fake images
             fake_validity = discriminator(fake_imgs)
-            # Gradient penalty
             gradient_penalty = compute_gradient_penalty(
                 discriminator, real_imgs.data, fake_imgs.data
             )
-            # Adversarial loss
+
             d_loss = (
                 -torch.mean(real_validity)
                 + torch.mean(fake_validity)
                 + lambda_gp * gradient_penalty
             )
-
             d_loss.backward()
             optimizer_D.step()
 
+            # -----------------
+            #  Train Generator
+            # -----------------
+
             optimizer_G.zero_grad()
-
-            # Train the generator every n_critic steps
+            
             if i % opt.n_critic == 0:
-
-                # -----------------
-                #  Train Generator
-                # -----------------
-
-                # Generate a batch of images
                 fake_imgs = generator(z)
-                # Loss measures generator's ability to fool the discriminator
-                # Train on fake images
                 fake_validity = discriminator(fake_imgs)
+                # g_loss = -torch.mean(fake_validity) + g_criterion(y, gt)
                 g_loss = -torch.mean(fake_validity)
-
                 g_loss.backward()
                 optimizer_G.step()
 
@@ -265,5 +225,5 @@ def train_wgan():
                 batches_done += opt.n_critic
 
 
-# train_wgan()
-train_renderer()
+train_wgan()
+# train_renderer()

@@ -237,7 +237,7 @@ class MultiDiscriminator(nn.Module):
                     *discriminator_block(64, 128),
                     *discriminator_block(128, 256),
                     *discriminator_block(256, 512),
-                    nn.Conv2d(512, 1, 3, padding=1)
+                    nn.Conv2d(512, 1, 3, padding=1),
                 ),
             )
 
@@ -360,6 +360,7 @@ class LayerNorm(nn.Module):
 
 cuda = True if torch.cuda.is_available() else False
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
+img_shape = (1, 64, 64)  # (C, H, W)
 
 
 class Generator(nn.Module):
@@ -379,11 +380,11 @@ class Generator(nn.Module):
             nn.Linear(100, 100),
             # *block(opt.latent_dim, 128, normalize=False),
             *block(100, 128, normalize=False),
-            *block(128, 256),
-            *block(256, 512),
-            *block(512, 1024),
+            *block(128, 256, normalize=False),
+            *block(256, 512, normalize=False),
+            *block(512, 1024, normalize=False),
             nn.Linear(1024, int(np.prod(img_shape))),
-            nn.Tanh()
+            nn.Tanh(),
         )
 
     def forward(self, z):
@@ -408,6 +409,38 @@ class Discriminator(nn.Module):
         img_flat = img.view(img.shape[0], -1)
         validity = self.model(img_flat)
         return validity
+
+
+# class Discriminator(nn.Module):
+#     def __init__(self):
+#         super(Discriminator, self).__init__()
+
+#         def discriminator_block(in_filters, out_filters, bn=True):
+#             block = [
+#                 nn.Conv2d(in_filters, out_filters, 3, 2, 1),
+#                 nn.LeakyReLU(0.2, inplace=True),
+#                 nn.Dropout2d(0.25),
+#             ]
+#             if bn:
+#                 block.append(nn.BatchNorm2d(out_filters, 0.8))
+#             return block
+
+#         self.model = nn.Sequential(
+#             *discriminator_block(img_shape[0], 16, bn=False),
+#             *discriminator_block(16, 32),
+#             *discriminator_block(32, 64),
+#             *discriminator_block(64, 128),
+#         )
+
+#         ds_size = img_shape[1] // 2 ** 4
+#         self.adv_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, 1), nn.Sigmoid())
+
+#     def forward(self, img):
+#         out = self.model(img)
+#         out = out.view(out.shape[0], -1)
+#         validity = self.adv_layer(out)
+#         # print(validity.shape)
+#         return validity
 
 
 def compute_gradient_penalty(D, real_samples, fake_samples):
@@ -438,8 +471,6 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
 #        Renderer
 ##############################
 
-img_shape = (1, 128, 128)  # (C, H, W)
-
 
 class MPN(nn.Module):
     def __init__(self, in_dim=4):
@@ -461,7 +492,7 @@ class MPN(nn.Module):
             *block(1024, 2048),
             *block(2048, 4096),
             nn.Linear(4096, int(np.prod(img_shape))),
-            nn.Tanh()
+            nn.Tanh(),
         )
 
     def forward(self, x):
@@ -495,7 +526,7 @@ class CoordConvPainter(nn.Module):
         def block(in_channel, out_channel, activate=True):
             layers = [nn.Conv2d(in_channel, out_channel, 1, stride=1, padding=0)]
             if activate:
-                layers += [nn.ReLU(inplace=True)]
+                layers += [nn.ReLU()]
             return layers
 
         self.model = nn.Sequential(
@@ -507,7 +538,7 @@ class CoordConvPainter(nn.Module):
             *block(64, 64),
             *block(64, 64, activate=False),
             *block(64, 1, activate=False),
-            nn.Tanh()
+            nn.Tanh(),
         )
 
     def forward(self, x):
@@ -519,41 +550,44 @@ class CoordConvPainter(nn.Module):
 class FCN(nn.Module):
     def __init__(self, in_dim):
         super(FCN, self).__init__()
-        self.fc1 = (nn.Linear(in_dim, 512))
-        self.fc2 = (nn.Linear(512, 1024))
-        self.fc3 = (nn.Linear(1024, 2048))
-        self.fc4 = (nn.Linear(2048, 4096))
-        
-        self.conv1 = (nn.Conv2d(16, 32, 3, 1, 1))
-        self.conv2 = (nn.Conv2d(32, 32, 3, 1, 1))
-        self.conv3 = (nn.Conv2d(8, 16, 3, 1, 1))
-        self.conv4 = (nn.Conv2d(16, 16, 3, 1, 1))
-        self.conv5 = (nn.Conv2d(4, 8, 3, 1, 1))
-        self.conv6 = (nn.Conv2d(8, 4, 3, 1, 1))
-        self.pixel_shuffle = nn.PixelShuffle(2)
-        
-        self.coord = AddCoords(rank=2)
-        self.conv7 = nn.Conv2d(3, 3, 1, 1, 0)
-        self.conv8 = nn.Conv2d(3, 1, 1, 1, 0)
+        self.fc = nn.Sequential(
+            nn.Linear(in_dim, 512),
+            #             nn.ReLU(),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(512, 1024),
+            #             nn.ReLU(),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(1024, 2048),
+            #             nn.ReLU(),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(2048, 4096),
+            #             nn.ReLU(),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.conv = nn.Sequential(
+            nn.Conv2d(16, 32, 3, 1, 1),
+            nn.BatchNorm2d(32),
+            #             nn.ReLU(),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.PixelShuffle(2),
+            nn.Conv2d(8, 16, 3, 1, 1),
+            nn.BatchNorm2d(16),
+            #             nn.ReLU(),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(16, 16, 3, 1, 1),
+            nn.PixelShuffle(2),
+            nn.Conv2d(4, 8, 3, 1, 1),
+            nn.BatchNorm2d(8),
+            #             nn.ReLU(),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(8, 4, 3, 1, 1),
+            nn.PixelShuffle(2),
+        )
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
+        x = self.fc(x)
         x = x.view(-1, 16, 16, 16)
-        x = F.relu(self.conv1(x))
-        x = self.pixel_shuffle(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = self.pixel_shuffle(self.conv4(x))
-        x = F.relu(self.conv5(x))
-        x = self.pixel_shuffle(self.conv6(x))  # (N, 1, 128, 128)
-        
-        # x = self.coord(x)  # (N, 3, 128, 128)
-        # x = self.conv7(x)
-        # x = self.conv8(x)
-
-        # x = torch.sigmoid(x)
+        x = self.conv(x)
         x = F.tanh(x)
-        # print(x.shape)
         return x.view(-1, 1, 128, 128)

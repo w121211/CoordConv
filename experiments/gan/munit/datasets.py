@@ -37,7 +37,7 @@ class MultiImageDataset(Dataset):
 
 
 class ImageDataset(Dataset):
-    def __init__(self, root,  transforms_=None):
+    def __init__(self, root, transforms_=None):
         self.transform = transforms.Compose(transforms_)
         self.files = sorted(glob.glob(root + "/*.png"))
         self.targets = np.load(os.path.join(root, "x.npy")).astype(np.float32)
