@@ -68,11 +68,6 @@ print(opt)
 
 # ------ Configure data loader --------
 
-# os.makedirs("images", exist_ok=True)
-# os.makedirs("data/layout/", exist_ok=True)
-# os.makedirs("saved_models/layout", exist_ok=True)
-# img_shape = (opt.channels, opt.img_size, opt.img_size)
-
 
 def sampler():
     x, y = [], []
@@ -84,6 +79,17 @@ def sampler():
     return x, y
 
 
+def sampler_linear():
+    x, y = [], []
+    for i in range(opt.img_size):
+        x.append(torch.tensor([i]))
+        y.append(torch.tensor([i - 1, i + 1]))
+    x = torch.stack(x).float()
+    y = torch.stack(y).float()
+    return x, y
+
+
+# x, y = sampler_linear()
 x, y = sampler()
 dataloader = torch.utils.data.DataLoader(
     torch.utils.data.TensorDataset(x, y), batch_size=opt.batch_size, shuffle=True
@@ -93,74 +99,41 @@ dataloader = torch.utils.data.DataLoader(
 # ------ Models --------
 
 
-class CNN(nn.Module):
+class LinearNet(nn.Module):
     def __init__(self):
-        super(Net, self).__init__()
-
-        def block(in_feat, out_feat, normalize=True):
-            layers = [nn.Linear(in_feat, out_feat)]
-            if normalize:
-                layers.append(nn.BatchNorm1d(out_feat, 0.8))
-            # layers.append(nn.LeakyReLU(0.2, inplace=True))
-            layers.append(nn.ReLU(inplace=True))
-            return layers
-
-        self.model = nn.Sequential(
-            # nn.Linear(opt.img_size * 2, 32),
-            nn.Linear(1, 16),
-            # *block(opt.latent_dim, 128, normalize=False),
-            *block(16, 16, normalize=True),
-            *block(16, 16, normalize=True),
-            *block(16, 16, normalize=True),
-            *block(16, 16, normalize=True),
-            *block(16, 16, normalize=True),
-            nn.Linear(16, opt.img_size),
-            nn.Sigmoid(),
-        )
+        super(LinearNet, self).__init__()
+        self.model = nn.Sequential(nn.Linear(1, 2))
 
     def forward(self, x):
-        # _n = x.shape[0]
-        # x = x.view(-1, 1).expand(_n, opt.img_size)
-        # coord = torch.arange(opt.img_size).float().expand(_n, opt.img_size)
-        # x = torch.cat((x, coord), 1)
-        # print(x)
-        x = self.model(x)
-        return x.view(-1, opt.img_size)
+        return self.model(x)
 
 
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
+        self.model = nn.Sequential(nn.Linear(1, 2), nn.Sigmoid())
+        self.criterion = torch.nn.MSELoss()
 
-        def block(in_feat, out_feat, normalize=True):
-            layers = [nn.Linear(in_feat, out_feat)]
-            if normalize:
-                layers.append(nn.BatchNorm1d(out_feat, 0.8))
-            # layers.append(nn.LeakyReLU(0.2, inplace=True))
-            layers.append(nn.ReLU(inplace=True))
-            return layers
-
-        self.model = nn.Sequential(
-            # nn.Linear(opt.img_size * 2, 32),
-            nn.Linear(1, 16),
-            # *block(opt.latent_dim, 128, normalize=False),
-            *block(16, 16, normalize=True),
-            *block(16, 16, normalize=True),
-            *block(16, 16, normalize=True),
-            *block(16, 16, normalize=True),
-            *block(16, 16, normalize=True),
-            nn.Linear(16, opt.img_size),
-            nn.Sigmoid(),
-        )
+    def loss(self, y, x1, x2, gt):
+        loss_restore = self.criterion(y, gt)
+        loss_coord = torch.mean(F.relu(-(x2 - x1 - 1.0)))
+        loss = loss_restore + loss_coord
+        # print(loss_restore.data, loss_coord.data)
+        return loss
 
     def forward(self, x):
-        # _n = x.shape[0]
-        # x = x.view(-1, 1).expand(_n, opt.img_size)
-        # coord = torch.arange(opt.img_size).float().expand(_n, opt.img_size)
-        # x = torch.cat((x, coord), 1)
-        # print(x)
+        l = opt.img_size
+        N = x.shape[0]
         x = self.model(x)
-        return x.view(-1, opt.img_size)
+        x1 = x[:, 0].view(-1, 1) * l
+        x2 = x[:, 1].view(-1, 1) * l
+        # x1 = x - 1.0
+        # x2 = x + 1.
+        _x1 = F.relu6((torch.arange(l).expand(N, -1).float() - x1) * 6.0)
+        _x2 = F.relu6((x2 - torch.arange(l).expand(N, -1).float()) * 6.0)
+        y = _x1 * _x2
+        y = y / 36.0  # normalize again after relu6 (multiply by 6.)
+        return y, x1, x2
 
 
 # ------ Train --------
@@ -168,6 +141,7 @@ class Net(nn.Module):
 
 def train():
     net = Net()
+    # net = LinearNet()
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
     criterion = torch.nn.MSELoss()
 
@@ -180,9 +154,11 @@ def train():
                 gt = gt.cuda()
                 x = x.cuda()
             net.train()
-            y = net(x)
+            y, x1, x2 = net(x)
+            # y = net(x)
             optimizer.zero_grad()
-            loss = criterion(y, gt)
+            # loss = criterion(y, gt)
+            loss = net.loss(y, x1, x2, gt)
             loss.backward()
             optimizer.step()
 
@@ -190,6 +166,8 @@ def train():
         if epoch % 100 == 0:
             print(epoch, i, loss.item())
             # print(x[0])
+            # print(x1)
+            # print(x2)
             # print(gt[0])
             # print(y[0])
             # torch.save(net.state_dict(), "saved_models/layout/renderer.pth")
