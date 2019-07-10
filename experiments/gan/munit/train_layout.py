@@ -79,9 +79,7 @@ os.makedirs("images", exist_ok=True)
 os.makedirs("data/layout/", exist_ok=True)
 os.makedirs("saved_models/layout", exist_ok=True)
 img_shape = (opt.channels, opt.img_size, opt.img_size)
-# img_shape = (1, 64, 64)
 
-# Configure data loader
 sampler(draw_rect, n_samples=100, save_path="data/layout/")
 dataloader = torch.utils.data.DataLoader(
     ImageDataset(
@@ -139,7 +137,7 @@ def train_wgan():
     # Initialize generator and discriminator
     generator = Generator(opt.latent_dim)
     discriminator = Discriminator()
-    g_criterion = torch.nn.MSELoss()
+    loss_restore = torch.nn.MSELoss()
 
     if cuda:
         generator.cuda()
@@ -157,7 +155,7 @@ def train_wgan():
     batches_done = 0
     for epoch in range(opt.n_epochs):
         # for i, (imgs) in enumerate(dataloader):
-        for i, (imgs, _) in enumerate(dataloader):
+        for i, (imgs, xs) in enumerate(dataloader):
             real_imgs = Variable(imgs.type(Tensor))
 
             # ---------------------
@@ -167,9 +165,10 @@ def train_wgan():
             optimizer_D.zero_grad()
 
             # Sample noise as generator input
-            z = Variable(
-                Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim)))
-            )
+            # z = Variable(
+            #     Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim)))
+            # )
+            z = xs
 
             # Generate a batch of images
             fake_imgs = generator(z)
@@ -193,12 +192,13 @@ def train_wgan():
             # -----------------
 
             optimizer_G.zero_grad()
-            
+
             if i % opt.n_critic == 0:
                 fake_imgs = generator(z)
                 fake_validity = discriminator(fake_imgs)
-                # g_loss = -torch.mean(fake_validity) + g_criterion(y, gt)
-                g_loss = -torch.mean(fake_validity)
+                y = fake_imgs * imgs  # use ground truth image as filter
+                g_loss = -torch.mean(fake_validity) + loss_restore(y, imgs)
+                # g_loss = -torch.mean(fake_validity)
                 g_loss.backward()
                 optimizer_G.step()
 
