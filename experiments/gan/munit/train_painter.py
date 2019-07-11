@@ -1,4 +1,4 @@
-# %%writefile /content/CoordConv/experiments/gan/munit/train_layout.py
+# %%writefile /content/CoordConv/experiments/gan/munit/train_painter.py
 import argparse
 import os
 import numpy as np
@@ -9,7 +9,6 @@ import torchvision.transforms as transforms
 from torchvision.utils import save_image
 
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision import datasets
 from torch.autograd import Variable
@@ -52,7 +51,7 @@ parser.add_argument(
     help="number of cpu threads to use during batch generation",
 )
 parser.add_argument(
-    "--latent_dim", type=int, default=10, help="dimensionality of the latent space"
+    "--latent_dim", type=int, default=100, help="dimensionality of the latent space"
 )
 parser.add_argument(
     "--img_size", type=int, default=28, help="size of each image dimension"
@@ -73,46 +72,25 @@ parser.add_argument(
 parser.add_argument(
     "--sample_interval", type=int, default=400, help="interval betwen image samples"
 )
-parser.add_argument("--data_path", type=str, default="data/layout")
-parser.add_argument("--model_path", type=str, default="saved_models")
+parser.add_argument("--data_path", type=str, default="data/layout/")
+parser.add_argument("--save_path", type=str, default="saved_models/")
 
 opt = parser.parse_args()
 print(opt)
 
 os.makedirs("images", exist_ok=True)
 os.makedirs(opt.data_path, exist_ok=True)
-os.makedirs(opt.model_path, exist_ok=True)
+os.makedirs(opt.save_path, exist_ok=True)
 img_shape = (opt.channels, opt.img_size, opt.img_size)
 
-painter = Generator(in_dim=2)
-painter.load_state_dict(torch.load(opt.model_path))
-painter.eval()
-for param in painter.parameters():
-    param.requires_grad = False  # freeze weight
-
-def sample():
-    transform = transforms.ToPILImage()()
-
-    w, h = 20, 20
-    xs = [0, (opt.img_size - w) / 2, opt.img_size - w]
-    ys = [0, (opt.img_size - h) / 2, opt.img_size - h]
-    i = 0
-    for x in xs:
-        for y in ys:
-            y = painter(torch.tensor([[x, y]]).float())
-            im = transform(y[0])
-            im.save("%s/%d.png" % (opt.data_path, i), "PNG")
-            i += 1
-
-
-sample()
+sampler(draw_rect, n_samples=100, save_path=opt.data_path)
 dataloader = torch.utils.data.DataLoader(
     ImageDataset(
         opt.data_path,
         transforms_=[
             # transforms.Resize(opt.img_size),
             transforms.ToTensor(),
-            # transforms.Normalize([0.5], [0.5]),
+            transforms.Normalize([0.5], [0.5]),
         ],
     ),
     batch_size=opt.batch_size,
@@ -120,37 +98,47 @@ dataloader = torch.utils.data.DataLoader(
 )
 
 
-class LayoutGenerator(nn.Module):
-    def __init__(self, in_dim=10):
-        super(LayoutGenerator, self).__init__()
+def train_renderer():
+    # net = CoordConvPainter(in_dim=4)
+    net = FCN(in_dim=opt.latent_dim)
+    optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
+    criterion = torch.nn.MSELoss()
 
-        def block(in_feat, out_feat, normalize=True):
-            layers = [nn.Linear(in_feat, out_feat)]
-            if normalize:
-                layers.append(nn.BatchNorm1d(out_feat, 0.8))
-            layers.append(nn.LeakyReLU(0.2, inplace=True))
-            return layers
+    if cuda:
+        net.cuda()
 
-        self.model = nn.Sequential(
-            # *block(in_dim, 128, normalize=False),
-            nn.Linear(in_dim, 64),
-            *block(64, 64, normalize=False),
-            *block(64, 64, normalize=False),
-            *block(64, 4, normalize=False),
-            nn.Linear(4, 4),
-        )
+    for epoch in range(opt.n_epochs):
+        for i, (gt, x) in enumerate(dataloader):
+            if cuda:
+                gt = gt.cuda()
+                x = x.cuda()
+            net.train()
+            y = net(x)
+            optimizer.zero_grad()
+            loss = criterion(y, gt)
+            loss.backward()
+            optimizer.step()
 
-    def forward(self, z):
-        coord = self.model(z)
-        return painter(coord)
+            if i % 1 == 0:
+                print(epoch, i, loss.item())
+                print(x[0])
+                # print(gt[0])
+                # print(y[0])
+                # save_image(gt.data[:25], "images/%d.png" % epoch, nrow=5, normalize=True)
+                # save_image(y.data[:25], "images/%d.png" % epoch, nrow=5, normalize=True)
+
+        # if epoch % 10 == 0 and epoch > 0:
+        if epoch % 1 == 0:
+            # torch.save(net.state_dict(), "saved_models/layout/renderer.pth")
+            save_image(y.data[:25], "images/%d.png" % epoch, nrow=5, normalize=True)
 
 
 def train_wgan():
+    # Loss weight for gradient penalty
     lambda_gp = 10
-    painter = torch.load(opt.save_path)
-    painter.eval()
 
-    generator = LayoutGenerator(opt.latent_dim)
+    # Initialize generator and discriminator
+    generator = Generator(opt.latent_dim)
     discriminator = Discriminator()
     loss_restore = torch.nn.MSELoss()
 
@@ -158,6 +146,7 @@ def train_wgan():
         generator.cuda()
         discriminator.cuda()
 
+    # Optimizers
     optimizer_G = torch.optim.Adam(
         generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2)
     )
@@ -165,23 +154,31 @@ def train_wgan():
         discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2)
     )
 
+    # Training
     batches_done = 0
     for epoch in range(opt.n_epochs):
         for i, (imgs, xs) in enumerate(dataloader):
             real_imgs = Variable(imgs.type(Tensor))
 
+            # ---------------------
             #  Train Discriminator
+            # ---------------------
+
             optimizer_D.zero_grad()
 
-            z = Variable(
-                Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim)))
-            )
+            # Sample noise as generator input
+            # z = Variable(
+            #     Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim)))
+            # )
             # z = Variable(Tensor(xs))
-            # z = xs
-            # if cuda:
-            #     z = z.cuda()
-            #     imgs = imgs.cuda()
+            z = xs
+            if cuda:
+                z = z.cuda()
+                imgs = imgs.cuda()
+
+            # Generate a batch of images
             fake_imgs = generator(z)
+
             real_validity = discriminator(real_imgs)
             fake_validity = discriminator(fake_imgs)
             gradient_penalty = compute_gradient_penalty(
@@ -196,7 +193,10 @@ def train_wgan():
             d_loss.backward()
             optimizer_D.step()
 
+            # -----------------
             #  Train Generator
+            # -----------------
+
             optimizer_G.zero_grad()
 
             if i % opt.n_critic == 0:
