@@ -375,11 +375,11 @@ class Generator(nn.Module):
             return layers
 
         self.model = nn.Sequential(
-            nn.Linear(in_dim, 100),
-            nn.Linear(100, 100),
-            nn.Linear(100, 100),
-            # *block(opt.latent_dim, 128, normalize=False),
-            *block(100, 128, normalize=False),
+            # nn.Linear(in_dim, 100),
+            # nn.Linear(100, 100),
+            # nn.Linear(100, 100),
+            *block(opt.latent_dim, 128, normalize=False),
+            # *block(100, 128, normalize=False),
             *block(128, 256, normalize=False),
             *block(256, 512, normalize=False),
             *block(512, 1024, normalize=False),

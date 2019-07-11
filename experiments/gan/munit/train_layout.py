@@ -154,7 +154,6 @@ def train_wgan():
     # Training
     batches_done = 0
     for epoch in range(opt.n_epochs):
-        # for i, (imgs) in enumerate(dataloader):
         for i, (imgs, xs) in enumerate(dataloader):
             real_imgs = Variable(imgs.type(Tensor))
 
@@ -168,7 +167,11 @@ def train_wgan():
             # z = Variable(
             #     Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim)))
             # )
+            # z = Variable(Tensor(xs))
             z = xs
+            if cuda:
+                z = z.cuda()
+                imgs = imgs.cuda()
 
             # Generate a batch of images
             fake_imgs = generator(z)
@@ -202,19 +205,18 @@ def train_wgan():
                 g_loss.backward()
                 optimizer_G.step()
 
-                print(
-                    "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
-                    % (
-                        epoch,
-                        opt.n_epochs,
-                        i,
-                        len(dataloader),
-                        d_loss.item(),
-                        g_loss.item(),
-                    )
-                )
-
                 if batches_done % opt.sample_interval == 0:
+                    print(
+                        "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
+                        % (
+                            epoch,
+                            opt.n_epochs,
+                            i,
+                            len(dataloader),
+                            d_loss.item(),
+                            g_loss.item(),
+                        )
+                    )
                     save_image(
                         fake_imgs.data[:25],
                         "images/%d.png" % batches_done,
