@@ -9,13 +9,13 @@ import torchvision.transforms as transforms
 from torchvision.utils import save_image
 
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision import datasets
 from torch.autograd import Variable
 
 from models import (
     Discriminator,
-    Generator,
     compute_gradient_penalty,
     CoordConvPainter,
     FCN,
@@ -90,13 +90,43 @@ dataloader = torch.utils.data.DataLoader(
         transforms_=[
             # transforms.Resize(opt.img_size),
             transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
+            # transforms.Normalize([0.5], [0.5]),
         ],
     ),
     batch_size=opt.batch_size,
     shuffle=True,
 )
 
+
+class Generator(nn.Module):
+    def __init__(self, in_dim=100):
+        super(Generator, self).__init__()
+
+        def block(in_feat, out_feat, normalize=True):
+            layers = [nn.Linear(in_feat, out_feat)]
+            if normalize:
+                layers.append(nn.BatchNorm1d(out_feat, 0.8))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            return layers
+
+        self.model = nn.Sequential(
+            # *block(in_dim, 128, normalize=False),
+            nn.Linear(in_dim, 128),
+            nn.Linear(128, 128),
+            nn.Linear(128, 128),
+            *block(128, 128, normalize=False),
+            *block(128, 256, normalize=False),
+            *block(256, 512, normalize=False),
+            *block(512, 1024, normalize=False),
+            nn.Linear(1024, int(np.prod(img_shape))),
+            # nn.Tanh(),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, z):
+        img = self.model(z)
+        img = img.view(img.shape[0], *img_shape)
+        return img
 
 def train_renderer():
     # net = CoordConvPainter(in_dim=4)
@@ -202,8 +232,9 @@ def train_wgan():
             if i % opt.n_critic == 0:
                 fake_imgs = generator(z)
                 fake_validity = discriminator(fake_imgs)
-                y = fake_imgs * imgs  # use ground truth image as filter
-                g_loss = -torch.mean(fake_validity) + loss_restore(y, imgs)
+#                 y = fake_imgs * imgs  # use ground truth image as filter
+#                 g_loss = -torch.mean(fake_validity) + 10 * loss_restore(y, imgs)
+                g_loss = -torch.mean(fake_validity) + 10 * loss_restore(fake_imgs, imgs)
                 # g_loss = -torch.mean(fake_validity)
                 g_loss.backward()
                 optimizer_G.step()
@@ -226,7 +257,10 @@ def train_wgan():
                         nrow=5,
                         normalize=True,
                     )
-                    torch.save(generator.state_dict(), opt.save_path)
+#                     torch.save(
+#                         generator.state_dict(),
+#                         os.path.join(opt.save_path, "%d.pt" % batches_done),
+#                     )
 
                 batches_done += opt.n_critic
 

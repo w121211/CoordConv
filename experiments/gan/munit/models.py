@@ -384,7 +384,8 @@ class Generator(nn.Module):
             *block(256, 512, normalize=False),
             *block(512, 1024, normalize=False),
             nn.Linear(1024, int(np.prod(img_shape))),
-            nn.Tanh(),
+            # nn.Tanh(),
+            nn.Sigmoid(),
         )
 
     def forward(self, z):

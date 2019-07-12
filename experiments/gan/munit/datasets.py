@@ -37,16 +37,21 @@ class MultiImageDataset(Dataset):
 
 
 class ImageDataset(Dataset):
-    def __init__(self, root, transforms_=None):
+    def __init__(self, root, transforms_=None, has_x=True):
         self.transform = transforms.Compose(transforms_)
         self.files = sorted(glob.glob(root + "/*.png"))
-        self.xs = np.load(os.path.join(root, "x.npy")).astype(np.float32)
+        self.xs = (
+            np.load(os.path.join(root, "x.npy")).astype(np.float32) if has_x else None
+        )
 
     def __getitem__(self, index):
         im = Image.open(self.files[index % len(self.files)])
         im = self.transform(im)
-        x = self.xs[index]
-        return im, x
+        if self.xs is not None:
+            x = self.xs[index]
+            return im, x
+        else:
+            return im, 0
 
     def __len__(self):
         return len(self.files)

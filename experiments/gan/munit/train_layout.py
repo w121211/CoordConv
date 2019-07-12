@@ -10,22 +10,14 @@ from torchvision.utils import save_image
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets
 from torch.autograd import Variable
 
-from models import (
-    Discriminator,
-    Generator,
-    compute_gradient_penalty,
-    CoordConvPainter,
-    FCN,
-)
+from models import Discriminator, compute_gradient_penalty, CoordConvPainter, FCN
 from datasets import generate_real_samples, ImageDataset
 from strokes import sampler, draw_rect
-
-cuda = True if torch.cuda.is_available() else False
-Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -74,50 +66,46 @@ parser.add_argument(
     "--sample_interval", type=int, default=400, help="interval betwen image samples"
 )
 parser.add_argument("--data_path", type=str, default="data/layout")
-parser.add_argument("--model_path", type=str, default="saved_models")
+parser.add_argument("--model_path", type=str, default="saved_models/95000.pt")
 
 opt = parser.parse_args()
 print(opt)
 
-os.makedirs("images", exist_ok=True)
-os.makedirs(opt.data_path, exist_ok=True)
-os.makedirs(opt.model_path, exist_ok=True)
-img_shape = (opt.channels, opt.img_size, opt.img_size)
 
-painter = Generator(in_dim=2)
-painter.load_state_dict(torch.load(opt.model_path))
-painter.eval()
-for param in painter.parameters():
-    param.requires_grad = False  # freeze weight
+class Paste2d(nn.Module):
+    def __init__(self, im_size):
+        super(Paste2d, self).__init__()
+        self.model = nn.Sequential(nn.Linear(1, 2), nn.Sigmoid())
+        self.criterion = torch.nn.MSELoss()
+        self.im_size = im_size
 
-def sample():
-    transform = transforms.ToPILImage()()
+    def loss(self, y, x1, x2, gt):
+        loss_restore = self.criterion(y, gt)
+        loss_coord = torch.mean(F.relu(-(x2 - x1 - 1.0)))
+        loss = loss_restore + loss_coord
+        return loss
 
-    w, h = 20, 20
-    xs = [0, (opt.img_size - w) / 2, opt.img_size - w]
-    ys = [0, (opt.img_size - h) / 2, opt.img_size - h]
-    i = 0
-    for x in xs:
-        for y in ys:
-            y = painter(torch.tensor([[x, y]]).float())
-            im = transform(y[0])
-            im.save("%s/%d.png" % (opt.data_path, i), "PNG")
-            i += 1
+    def forward(self, x):
+        l = self.im_size
+        N = x.shape[0]
 
+        x0 = x[:, 0].view(-1, 1) * l - 1.0
+        y0 = x[:, 1].view(-1, 1) * l - 1.0
+        x1 = x[:, 2].view(-1, 1) * l + 1.0
+        y1 = x[:, 3].view(-1, 1) * l + 1.0
 
-sample()
-dataloader = torch.utils.data.DataLoader(
-    ImageDataset(
-        opt.data_path,
-        transforms_=[
-            # transforms.Resize(opt.img_size),
-            transforms.ToTensor(),
-            # transforms.Normalize([0.5], [0.5]),
-        ],
-    ),
-    batch_size=opt.batch_size,
-    shuffle=True,
-)
+        _x0 = F.relu6((torch.arange(l).expand(N, -1).float() - x0) * 6.0)
+        _x1 = F.relu6((x1 - torch.arange(l).expand(N, -1).float()) * 6.0)
+        x_mask = (_x0 * _x1) / 36  # normalize again after relu6 (multiply by 6.)
+        x_mask = x_mask.view(N, 1, l)
+        
+        _y0 = F.relu6((torch.arange(l).expand(N, -1).float() - y0) * 6.0)
+        _y1 = F.relu6((y1 - torch.arange(l).expand(N, -1).float()) * 6.0)
+        y_mask = (_y0 * _y1) / 36  # normalize again after relu6 (multiply by 6.)
+        y_mask = y_mask.view(N, l, 1)  # align to y-axis
+        
+        mask = torch.ones(N,l,l) * x_mask * y_mask
+        return mask.view(-1, 1, l, l)
 
 
 class LayoutGenerator(nn.Module):
@@ -138,17 +126,88 @@ class LayoutGenerator(nn.Module):
             *block(64, 64, normalize=False),
             *block(64, 4, normalize=False),
             nn.Linear(4, 4),
+            nn.Sigmoid(),
         )
+
+    def loss_coord(self, coord):
+        x0 = coord[:, 0] * opt.img_size
+        y0 = coord[:, 1]* opt.img_size
+        x1 = coord[:, 2]* opt.img_size
+        y1 = coord[:, 3]* opt.img_size
+        loss = torch.mean(F.relu(-(x1 - x0 - 1.0))) + torch.mean(F.relu(-(y1 - y0 - 1.0)))
+        return loss
 
     def forward(self, z):
         coord = self.model(z)
-        return painter(coord)
+        # print(coord[0])
+        return painter(coord), coord
+
+
+cuda = True if torch.cuda.is_available() else False
+Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
+
+os.makedirs("images", exist_ok=True)
+os.makedirs(opt.data_path, exist_ok=True)
+# os.makedirs(opt.model_path, exist_ok=True)
+img_shape = (opt.channels, opt.img_size, opt.img_size)
+
+# painter = Generator(in_dim=4)
+# painter.load_state_dict(torch.load(opt.model_path, map_location="cpu"))
+painter = Paste2d(opt.img_size)
+painter.eval()
+for param in painter.parameters():
+    param.requires_grad = False  # freeze weight
+
+
+def sample():
+    transform = transforms.ToPILImage()
+    box_w, box_h = 20, 20
+    w, h = opt.img_size, opt.img_size
+    xs = [0, (w - box_w) / 2, w - box_w]
+    ys = [0, (h - box_h) / 2, h - box_h]
+    i = 0
+    for x in xs:
+        for y in ys:
+            print(x, y)
+            x0, y0 = x / w, y / h
+            x1, y1 = (x + box_w) / w, (y + box_h) / h
+            y = painter(torch.tensor([[x0, y0, x1, y1]]).float())
+            im = transform(y[0])
+            im.save("%s/%d.png" % (opt.data_path, i), "PNG")
+            i += 1
+
+
+def sample_center():
+    transform = transforms.ToPILImage()
+    box_range = [5, 30]
+    w, h = opt.img_size, opt.img_size
+
+    for i, box_w in enumerate(range(*box_range)):
+        x0, y0 = (w - box_w) / 2, (h - box_w) / 2
+        x1, y1 = x0 + box_w, y0 + box_w
+        y = painter(torch.tensor([[x0 / w, y0 / h, x1 / w, y1 / h]]).float())
+        im = transform(y[0])
+        im.save("%s/%d.png" % (opt.data_path, i), "PNG")
+
+
+sample_center()
+dataloader = torch.utils.data.DataLoader(
+    ImageDataset(
+        opt.data_path,
+        transforms_=[
+            # transforms.Resize(opt.img_size),
+            transforms.ToTensor(),
+            # transforms.Normalize([0.5], [0.5]),
+        ],
+        has_x=False,
+    ),
+    batch_size=opt.batch_size,
+    shuffle=True,
+)
 
 
 def train_wgan():
     lambda_gp = 10
-    painter = torch.load(opt.save_path)
-    painter.eval()
 
     generator = LayoutGenerator(opt.latent_dim)
     discriminator = Discriminator()
@@ -167,7 +226,8 @@ def train_wgan():
 
     batches_done = 0
     for epoch in range(opt.n_epochs):
-        for i, (imgs, xs) in enumerate(dataloader):
+        # for i, (imgs, xs) in enumerate(dataloader):
+        for i, (imgs, _) in enumerate(dataloader):
             real_imgs = Variable(imgs.type(Tensor))
 
             #  Train Discriminator
@@ -181,7 +241,7 @@ def train_wgan():
             # if cuda:
             #     z = z.cuda()
             #     imgs = imgs.cuda()
-            fake_imgs = generator(z)
+            fake_imgs, coords = generator(z)
             real_validity = discriminator(real_imgs)
             fake_validity = discriminator(fake_imgs)
             gradient_penalty = compute_gradient_penalty(
@@ -200,11 +260,9 @@ def train_wgan():
             optimizer_G.zero_grad()
 
             if i % opt.n_critic == 0:
-                fake_imgs = generator(z)
+                fake_imgs, coords = generator(z)
                 fake_validity = discriminator(fake_imgs)
-                y = fake_imgs * imgs  # use ground truth image as filter
-                g_loss = -torch.mean(fake_validity) + loss_restore(y, imgs)
-                # g_loss = -torch.mean(fake_validity)
+                g_loss = -torch.mean(fake_validity) + generator.loss_coord(coords)
                 g_loss.backward()
                 optimizer_G.step()
 
@@ -226,10 +284,9 @@ def train_wgan():
                         nrow=5,
                         normalize=True,
                     )
-                    torch.save(generator.state_dict(), opt.save_path)
+                    # torch.save(generator.state_dict(), opt.save_path)
 
                 batches_done += opt.n_critic
 
 
 train_wgan()
-# train_renderer()
