@@ -93,18 +93,25 @@ class Paste2d(nn.Module):
         y0 = x[:, 1].view(-1, 1) * l - 1.0
         x1 = x[:, 2].view(-1, 1) * l + 1.0
         y1 = x[:, 3].view(-1, 1) * l + 1.0
-
-        _x0 = F.relu6((torch.arange(l).expand(N, -1).float() - x0) * 6.0)
-        _x1 = F.relu6((x1 - torch.arange(l).expand(N, -1).float()) * 6.0)
+        
+        coord = torch.arange(l).expand(N, -1).float()
+        if cuda:
+          coord = coord.cuda()
+          
+        _x0 = F.relu6((coord - x0) * 6.0)
+        _x1 = F.relu6((x1 - coord) * 6.0)
         x_mask = (_x0 * _x1) / 36  # normalize again after relu6 (multiply by 6.)
         x_mask = x_mask.view(N, 1, l)
         
-        _y0 = F.relu6((torch.arange(l).expand(N, -1).float() - y0) * 6.0)
-        _y1 = F.relu6((y1 - torch.arange(l).expand(N, -1).float()) * 6.0)
+        _y0 = F.relu6((coord - y0) * 6.0)
+        _y1 = F.relu6((y1 - coord) * 6.0)
         y_mask = (_y0 * _y1) / 36  # normalize again after relu6 (multiply by 6.)
         y_mask = y_mask.view(N, l, 1)  # align to y-axis
         
-        mask = torch.ones(N,l,l) * x_mask * y_mask
+        mask = torch.ones(N,l,l)
+        if cuda:
+          mask = mask.cuda()
+        mask = mask * x_mask * y_mask
         return mask.view(-1, 1, l, l)
 
 
@@ -154,6 +161,8 @@ img_shape = (opt.channels, opt.img_size, opt.img_size)
 # painter = Generator(in_dim=4)
 # painter.load_state_dict(torch.load(opt.model_path, map_location="cpu"))
 painter = Paste2d(opt.img_size)
+if cuda:
+  painter.cuda()
 painter.eval()
 for param in painter.parameters():
     param.requires_grad = False  # freeze weight
@@ -185,8 +194,11 @@ def sample_center():
     for i, box_w in enumerate(range(*box_range)):
         x0, y0 = (w - box_w) / 2, (h - box_w) / 2
         x1, y1 = x0 + box_w, y0 + box_w
-        y = painter(torch.tensor([[x0 / w, y0 / h, x1 / w, y1 / h]]).float())
-        im = transform(y[0])
+        x = torch.tensor([[x0 / w, y0 / h, x1 / w, y1 / h]]).float()
+        if cuda:
+          x = x.cuda()
+        y = painter(x)
+        im = transform(y[0].cpu())
         im.save("%s/%d.png" % (opt.data_path, i), "PNG")
 
 
