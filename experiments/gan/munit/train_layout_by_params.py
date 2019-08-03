@@ -4,16 +4,17 @@ import os
 import numpy as np
 import math
 import sys
+import functools
 
 import torchvision.transforms as transforms
 from torchvision.utils import save_image
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets
 from torch.autograd import Variable
+from faker import Faker
 
 from models import Discriminator, compute_gradient_penalty, CoordConvPainter, FCN
 from datasets import generate_real_samples, ImageDataset
@@ -71,6 +72,9 @@ parser.add_argument("--model_path", type=str, default="saved_models/95000.pt")
 opt = parser.parse_args()
 print(opt)
 
+# -------------------------------
+# Define models
+# -------------------------------
 
 class Paste2d(nn.Module):
     def __init__(self, im_size):
@@ -149,6 +153,9 @@ class LayoutGenerator(nn.Module):
         # print(coord[0])
         return painter(coord), coord
 
+# -------------------------------
+# Dataset sampling & init models
+# -------------------------------
 
 cuda = True if torch.cuda.is_available() else False
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
@@ -185,7 +192,6 @@ def sample():
             im.save("%s/%d.png" % (opt.data_path, i), "PNG")
             i += 1
 
-
 def sample_center():
     transform = transforms.ToPILImage()
     box_range = [5, 30]
@@ -202,7 +208,45 @@ def sample_center():
         im.save("%s/%d.png" % (opt.data_path, i), "PNG")
 
 
-sample_center()
+def sample_text_layout(n_samples=100):
+    w, h = opt.img_size, opt.img_size
+    fake = Faker()
+
+    def _sample_one(i):
+        # sample text seed
+        # textbox = (0, 0, fake.pyint(min_value=w*2/3, max_value=w, step=1))  # (x, y, w, h)
+        token_h = 5
+        textbox_wh = (w*2/3, token_h)
+    #     textbox_xy = (w - textbox_wh[0] / 2, h - textbox_wh[1] / 2)
+        textbox_xy = (0, (h - textbox_wh[1]) / 2)
+        n_tokens = fake.pyint(min=1, max=3, step=1)
+        token_gap = fake.pyint(min=3, max=5, step=1)
+        tokens_width = (fake.pyint(min=3, max=6, step=1) for _ in range(n_tokens))
+
+        _x, _y = textbox_xy
+        tokens_xywh = []
+        for _w in tokens_width:
+            tokens_xywh.append((_x, _y, _w, token_h))
+            _x += _w + token_gap
+
+        # render token boxes
+        transform = transforms.ToPILImage()
+        y = torch.zeros(1, 1,  w, h)
+        for _, (x0, y0, _w, _h) in enumerate(tokens_xywh):
+            x1, y1 = x0+_w, y0+_h
+            x = torch.tensor([[x0 / w, y0 / h, x1 / w, y1 / h]]).float()
+            if cuda:
+              x = x.cuda()
+            y += painter(x)
+
+        im = transform(y[0].cpu())
+        im.save("%s/%d.png" % (opt.data_path, i), "PNG")
+    
+    for i in range(n_samples):
+        _sample_one(i)
+
+# sample_center()
+sample_text_layout(n_samples=100)
 dataloader = torch.utils.data.DataLoader(
     ImageDataset(
         opt.data_path,
@@ -217,6 +261,9 @@ dataloader = torch.utils.data.DataLoader(
     shuffle=True,
 )
 
+# -------------------------------
+# Training GAN
+# -------------------------------
 
 def train_wgan():
     lambda_gp = 10

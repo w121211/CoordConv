@@ -124,4 +124,3 @@ def sampler(draw_fn, n_samples=10000, save_path=None):
         im = torch.stack(im)
 
     return x, im
-

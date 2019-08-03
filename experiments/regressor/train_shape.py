@@ -1,7 +1,10 @@
+# %%writefile /content/CoordConv/experiments/regressor/train_shape.py
 import os
 import glob
 import argparse
 import itertools
+import random
+from enum import Enum
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -67,6 +70,7 @@ parser.add_argument(
     "--sample_interval", type=int, default=400, help="interval betwen image samples"
 )
 parser.add_argument("--n_strokes", type=int, default=1)
+parser.add_argument("--n_samples", type=int, default=100)
 parser.add_argument("--data_path", type=str, default="data/regressor")
 parser.add_argument("--model_path", type=str, default="saved_models/95000.pt")
 
@@ -166,7 +170,7 @@ class ImageDataset(utils.Dataset):
         self.transform = transforms.Compose(transforms_)
         self.files = sorted(glob.glob(root + "/*.png"))
         self.xs = (
-            np.load(os.path.join(root, "x.npy")).astype(np.float32) if has_x else None
+            np.load(os.path.join(root, "xs.npy")).astype(np.float32) if has_x else None
         )
         self.n_strokes = n_strokes
 
@@ -245,6 +249,68 @@ def sample(n_samples=100, n_strokes=3):
             xs.append(np.array(_xs, dtype=float))
     np.save("%s/x.npy" % (opt.data_path), np.stack(xs))
 
+def sample_draw(n_samples=100):
+    fake = Faker()
+    # Brush = Enum('Brush', 'RECT PHOTO TEXT SPRITE')
+    Brush = Enum('Brush', 'RECT')
+
+    def _sample_x(frame_xywh, xywh=None, brush=None, rgb=None,min_wh=(5, 5)):
+        if xywh is None:
+            w = fake.pyint(min_wh[0], frame_xywh[2])
+            h = fake.pyint(min_wh[1], frame_xywh[3])
+            x = fake.pyint(0, frame_xywh[2] - w) + frame_xywh[0]
+            y = fake.pyint(0, frame_xywh[3] - h)+ frame_xywh[1]
+            xywh = x, y, w, h
+        if brush is None:
+            brush = random.choice(list(Brush))
+        if rgb is None:
+            rgb = [int(x) for x in fake.rgb_color().split(",")]
+        return (*xywh, *rgb, brush.value)
+        
+    def _cut(xywh, ratio=random.choice([1/6, 1/5, 1/4, 1/3, 1/2])):
+        x, y, w, h = xywh
+        r0 = random.choice([ratio, 1-ratio])
+        w0 = int(w * ratio)
+        w1 = w - w0
+        xywh0 = (x, y, w0, h)
+        xywh1 = (x+w0, y, w1, h)
+        return xywh0, xywh1
+
+    # draw image
+    xs = []
+    n_strokes = 4  # a hack
+    for i in range(n_samples):
+        im = Image.new("RGB", (img_shape[1], img_shape[2]))
+        draw = ImageDraw.Draw(im)
+        _xs = []
+        for f in _cut((0, 0, img_shape[1], img_shape[2])):
+            _xs += [_sample_x(f, xywh=f, brush=Brush.RECT), _sample_x(f)]  # bg, item
+        
+        for j, x in enumerate(_xs):
+            x, y, w, h, r, g, b, brush = x
+            x0, y0, x1, y1 = x, y, x+w, y+h
+
+            if Brush(brush) == Brush.RECT:
+                draw.rectangle((x0, y0, x1, y1), fill=(r, g, b))
+            #     elif brush == Brush.PHOTO:
+            #         pass
+            #     elif brush == Brush.TEXT:
+            #         pass
+            #     elif brush == Brush.SPRITE:
+            #         pass
+
+            im.copy().save("%s/%d.png" % (opt.data_path, i * n_strokes + j), "PNG")
+            _x = (
+                    x0 / img_shape[1],
+                    y0 / img_shape[2],
+                    x1 / img_shape[1],
+                    y1 / img_shape[2],
+                    # r / 255,
+                    # g / 255,
+                    # b / 255,
+                )
+            xs.append(np.array(_x, dtype=float))
+    np.save("%s/xs.npy" % (opt.data_path), np.stack(xs))
 
 def train(dataloader):
     model = HRNet(img_shape[1]).to(device)
@@ -287,7 +353,7 @@ if __name__ == "__main__":
     np.random.seed(0)
     torch.manual_seed(0)
 
-    sample(n_samples=10, n_strokes=opt.n_strokes)
+    sample_draw(n_samples=opt.n_samples)
     dataloader = utils.DataLoader(
         ImageDataset(
             opt.data_path,
