@@ -17,8 +17,6 @@ from torch.autograd import Variable
 from faker import Faker
 
 from models import Discriminator, compute_gradient_penalty, CoordConvPainter, FCN
-from datasets import generate_real_samples, ImageDataset
-from strokes import sampler, draw_rect
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -75,49 +73,6 @@ print(opt)
 # -------------------------------
 # Define models
 # -------------------------------
-
-
-class Paste2d(nn.Module):
-    def __init__(self, im_size):
-        super(Paste2d, self).__init__()
-        self.model = nn.Sequential(nn.Linear(1, 2), nn.Sigmoid())
-        self.criterion = torch.nn.MSELoss()
-        self.im_size = im_size
-
-    def loss(self, y, x1, x2, gt):
-        loss_restore = self.criterion(y, gt)
-        loss_coord = torch.mean(F.relu(-(x2 - x1 - 1.0)))
-        loss = loss_restore + loss_coord
-        return loss
-
-    def forward(self, x):
-        l = self.im_size
-        N = x.shape[0]
-
-        x0 = x[:, 0].view(-1, 1) * l - 1.0
-        y0 = x[:, 1].view(-1, 1) * l - 1.0
-        x1 = x[:, 2].view(-1, 1) * l + 1.0
-        y1 = x[:, 3].view(-1, 1) * l + 1.0
-
-        coord = torch.arange(l).expand(N, -1).float()
-        if cuda:
-            coord = coord.cuda()
-
-        _x0 = F.relu6((coord - x0) * 6.0)
-        _x1 = F.relu6((x1 - coord) * 6.0)
-        x_mask = (_x0 * _x1) / 36  # normalize again after relu6 (multiply by 6.)
-        x_mask = x_mask.view(N, 1, l)
-
-        _y0 = F.relu6((coord - y0) * 6.0)
-        _y1 = F.relu6((y1 - coord) * 6.0)
-        y_mask = (_y0 * _y1) / 36  # normalize again after relu6 (multiply by 6.)
-        y_mask = y_mask.view(N, l, 1)  # align to y-axis
-
-        mask = torch.ones(N, l, l)
-        if cuda:
-            mask = mask.cuda()
-        mask = mask * x_mask * y_mask
-        return mask.view(-1, 1, l, l)
 
 
 class LayoutGenerator(nn.Module):
