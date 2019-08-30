@@ -16,7 +16,7 @@ from torchvision import datasets
 from torch.autograd import Variable
 from faker import Faker
 
-from models import Discriminator, compute_gradient_penalty, CoordConvPainter, FCN
+from .train_gan_char import Generator as CharGenerator
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
