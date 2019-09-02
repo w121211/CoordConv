@@ -1,4 +1,4 @@
-# %%writefile /content/CoordConv/experiments/gan/munit/train_layout_by_params.py
+# %%writefile /content/CoordConv/gan-textbox/train_toy_pasteline.py
 import argparse
 import os
 import numpy as np
@@ -6,20 +6,18 @@ import math
 import sys
 import functools
 
+from PIL import Image, ImageDraw, ImageFont
+from faker import Faker
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
-
-# from torchvision import datasets
 import torchvision.transforms as transforms
 from torchvision.utils import save_image
 
-from PIL import Image, ImageDraw, ImageFont
-from faker import Faker
-
-# from .train_gan_char import Generator as CharGenerator
-from models.gan import PasteLine, Discriminator, compute_gradient_penalty
+from models.gan import Discriminator, compute_gradient_penalty
+from models.paste import PasteLine
 
 # -------------------------------
 # Toy experiment:
@@ -254,7 +252,7 @@ def train_wgan():
                 real_imgs = real_imgs.cuda()
                 text_status = text_status.cuda()
                 chars = chars.cuda()
-                sizes = sizes.cuda()
+                char_sizes = char_sizes.cuda()
             fake_imgs, coords = generator(z, text_status, chars, char_sizes)
             real_validity = discriminator(real_imgs)
             fake_validity = discriminator(fake_imgs)
