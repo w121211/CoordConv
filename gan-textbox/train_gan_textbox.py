@@ -6,17 +6,31 @@ import math
 import sys
 import functools
 
-import torchvision.transforms as transforms
-from torchvision.utils import save_image
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from torchvision import datasets
-from torch.autograd import Variable
+from torch.utils.data import DataLoader, Dataset
+
+# from torchvision import datasets
+import torchvision.transforms as transforms
+from torchvision.utils import save_image
+
+from PIL import Image, ImageDraw, ImageFont
 from faker import Faker
 
-from .train_gan_char import Generator as CharGenerator
+# from .train_gan_char import Generator as CharGenerator
+from .models import PasteLine, Discriminator, compute_gradient_penalty
+
+# -------------------------------
+# Toy experiment:
+#   1. (z, token_status = (token_width, token_height)) -> G -> Line_coord (x0, y0)
+#   2. (x0, y0) -> PasteLine -> Image
+#   3. Image -> D -> y
+#
+# Dataset:
+#   Real: token places at center of images
+# -------------------------------
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -70,10 +84,17 @@ parser.add_argument("--model_path", type=str, default="saved_models/95000.pt")
 opt = parser.parse_args()
 print(opt)
 
+os.makedirs("images", exist_ok=True)
+os.makedirs(opt.data_path, exist_ok=True)
+# os.makedirs(opt.model_path, exist_ok=True)
+
+cuda = True if torch.cuda.is_available() else False
+
+img_shape = (opt.channels, opt.img_size, opt.img_size)
+
 # -------------------------------
 # Define models
 # -------------------------------
-
 
 class LayoutGenerator(nn.Module):
     def __init__(self, in_dim=10):
@@ -91,10 +112,19 @@ class LayoutGenerator(nn.Module):
             nn.Linear(in_dim, 64),
             *block(64, 64, normalize=False),
             *block(64, 64, normalize=False),
-            *block(64, 4, normalize=False),
-            nn.Linear(4, 4),
+            *block(64, 2, normalize=False),
+            nn.Linear(2, 2),
             nn.Sigmoid(),
         )
+        # painter = Generator(in_dim=4)
+        # painter.load_state_dict(torch.load(opt.model_path, map_location="cpu"))
+        painter = PasteLine(opt.img_size, max_chars=10)
+        if cuda:
+            painter.cuda()
+        painter.eval()
+        for param in painter.parameters():
+            param.requires_grad = False  # freeze weight
+        self.painter = painter
 
     def loss_coord(self, coord):
         x0 = coord[:, 0] * opt.img_size
@@ -106,122 +136,77 @@ class LayoutGenerator(nn.Module):
         )
         return loss
 
-    def forward(self, z):
-        coord = self.model(z)
-        # print(coord[0])
-        return painter(coord), coord
+    def forward(self, z, text_status, chars, char_sizes):
+        # x = torch.cat([z, text_status], dim=1)
+        # coord = self.model(x)
+        
+        return self.painter(coord, chars, char_sizes), coord
 
 
 # -------------------------------
 # Dataset sampling & init models
 # -------------------------------
 
-cuda = True if torch.cuda.is_available() else False
-Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
-os.makedirs("images", exist_ok=True)
-os.makedirs(opt.data_path, exist_ok=True)
-# os.makedirs(opt.model_path, exist_ok=True)
-img_shape = (opt.channels, opt.img_size, opt.img_size)
-
-# painter = Generator(in_dim=4)
-# painter.load_state_dict(torch.load(opt.model_path, map_location="cpu"))
-painter = Paste2d(opt.img_size)
-if cuda:
-    painter.cuda()
-painter.eval()
-for param in painter.parameters():
-    param.requires_grad = False  # freeze weight
-
-
-def sample():
-    transform = transforms.ToPILImage()
-    box_w, box_h = 20, 20
-    w, h = opt.img_size, opt.img_size
-    xs = [0, (w - box_w) / 2, w - box_w]
-    ys = [0, (h - box_h) / 2, h - box_h]
-    i = 0
-    for x in xs:
-        for y in ys:
-            print(x, y)
-            x0, y0 = x / w, y / h
-            x1, y1 = (x + box_w) / w, (y + box_h) / h
-            y = painter(torch.tensor([[x0, y0, x1, y1]]).float())
-            im = transform(y[0])
-            im.save("%s/%d.png" % (opt.data_path, i), "PNG")
-            i += 1
+def text_to_char_images(
+    text,
+    font="/notebooks/post-generator/asset/fonts_en/Roboto/Roboto-Regular.ttf",
+    font_size=14,
+    out_size=14,
+):
+    font = ImageFont.truetype(font, font_size)
+    transform = transforms.ToTensor()
+    chars, sizes = [], []
+    for c in text:
+        size = font.getsize(c)
+        im = Image.new("L", (out_size, out_size))
+        draw = ImageDraw.Draw(im)
+        draw.text((0, 0), c, font=font, fill=255)
+        chars.append(transform(im).unsqueeze(0))
+        sizes.append(torch.Tensor(size).view(1, 2))
+    return torch.cat(chars), torch.cat(sizes)
 
 
-def sample_center():
-    transform = transforms.ToPILImage()
-    box_range = [5, 30]
-    w, h = opt.img_size, opt.img_size
+class MyDataset(Dataset):
+    def __init__(self, img_size=opt.img_size, num_samples=100):
+        self.transform = transforms.Compose(
+            [
+                # transforms.Resize(opt.img_size),
+                transforms.ToTensor(),
+                # transforms.Normalize([0.5], [0.5]),
+            ]
+        )
+        self.post_dir = ""  # real images
+        self.photo_dir = "/notebooks/CoordConv-pytorch/data/facebook"
+        self.samples = self._sample(num_samples)
 
-    for i, box_w in enumerate(range(*box_range)):
-        x0, y0 = (w - box_w) / 2, (h - box_w) / 2
-        x1, y1 = x0 + box_w, y0 + box_w
-        x = torch.tensor([[x0 / w, y0 / h, x1 / w, y1 / h]]).float()
-        if cuda:
-            x = x.cuda()
-        y = painter(x)
-        im = transform(y[0].cpu())
-        im.save("%s/%d.png" % (opt.data_path, i), "PNG")
+    def __getitem__(self, index):
+        real_img = fake.py_choice(self.)
 
+        fake = Faker()
+        text = fake.sentence()
+        return real_img, photo, text
 
-def sample_text_layout(n_samples=100):
-    w, h = opt.img_size, opt.img_size
-    fake = Faker()
+    def __len__(self):
+        return len(self.samples)
 
-    def _sample_one(i):
-        # sample text seed
-        # textbox = (0, 0, fake.pyint(min_value=w*2/3, max_value=w, step=1))  # (x, y, w, h)
-        token_h = 5
-        textbox_wh = (w * 2 / 3, token_h)
-        #     textbox_xy = (w - textbox_wh[0] / 2, h - textbox_wh[1] / 2)
-        textbox_xy = (0, (h - textbox_wh[1]) / 2)
-        n_tokens = fake.pyint(1, 3, 1)
-        token_gap = fake.pyint(3, 5, 1)
-        tokens_width = (fake.pyint(3, 6, 1) for _ in range(n_tokens))
+    def _sample(self, num_samples):
+        fake = Faker()
+        font = ImageFont.truetype(self.font, self.font_size)
+        samples = []
+        for _ in range(num_samples):
+            tk = fake.word()
+            tk_w, tk_h = font.getsize(tk)
+            im = Image.new("L", (self.img_size, self.img_size))
+            draw = ImageDraw.Draw(im)
+            x0, y0 = (self.img_size - tk_w) / 2, (self.img_size - tk_h) / 2
+            draw.text((x0, y0), tk, font=font, fill=255)
+            # im.save("%s/%d.png" % (self.root, i), "PNG")
+            samples.append(
+                (im, np.array([tk_w / self.img_size, tk_h / self.img_size]), tk)
+            )
+        return samples
 
-        _x, _y = textbox_xy
-        tokens_xywh = []
-        for _w in tokens_width:
-            tokens_xywh.append((_x, _y, _w, token_h))
-            _x += _w + token_gap
-
-        # render token boxes
-        transform = transforms.ToPILImage()
-        y = torch.zeros(1, 1, w, h)
-        for _, (x0, y0, _w, _h) in enumerate(tokens_xywh):
-            x1, y1 = x0 + _w, y0 + _h
-            x = torch.tensor([[x0 / w, y0 / h, x1 / w, y1 / h]]).float()
-            if cuda:
-                x = x.cuda()
-            _y = painter(x)
-            y += _y.cpu()
-
-        im = transform(y[0].cpu())
-        im.save("%s/%d.png" % (opt.data_path, i), "PNG")
-
-    for i in range(n_samples):
-        _sample_one(i)
-
-
-# sample_center()
-sample_text_layout(n_samples=100)
-dataloader = torch.utils.data.DataLoader(
-    ImageDataset(
-        opt.data_path,
-        transforms_=[
-            # transforms.Resize(opt.img_size),
-            transforms.ToTensor(),
-            # transforms.Normalize([0.5], [0.5]),
-        ],
-        has_x=False,
-    ),
-    batch_size=opt.batch_size,
-    shuffle=True,
-)
 
 # -------------------------------
 # Training GAN
@@ -229,10 +214,13 @@ dataloader = torch.utils.data.DataLoader(
 
 
 def train_wgan():
+    dataloader = torch.utils.data.DataLoader(
+        MyDataset(num_samples=100), batch_size=opt.batch_size, shuffle=True
+    )
     lambda_gp = 10
 
-    generator = LayoutGenerator(opt.latent_dim)
-    discriminator = Discriminator()
+    generator = LayoutGenerator(opt.latent_dim + 2)
+    discriminator = Discriminator(img_shape)
     loss_restore = torch.nn.MSELoss()
 
     if cuda:
@@ -248,22 +236,21 @@ def train_wgan():
 
     batches_done = 0
     for epoch in range(opt.n_epochs):
-        # for i, (imgs, xs) in enumerate(dataloader):
-        for i, (imgs, _) in enumerate(dataloader):
-            real_imgs = Variable(imgs.type(Tensor))
-
+        for i, (real_imgs, text_status, chars, char_sizes) in enumerate(dataloader):
+            # for i, real_imgs in enumerate(dataloader):
             #  Train Discriminator
             optimizer_D.zero_grad()
 
-            z = Variable(
-                Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim)))
-            )
-            # z = Variable(Tensor(xs))
-            # z = xs
-            # if cuda:
-            #     z = z.cuda()
-            #     imgs = imgs.cuda()
-            fake_imgs, coords = generator(z)
+            z = torch.tensor(
+                np.random.normal(0, 1, (real_imgs.shape[0], opt.latent_dim))
+            ).float()
+            if cuda:
+                z = z.cuda()
+                real_imgs = real_imgs.cuda()
+                text_status = text_status.cuda()
+                chars = chars.cuda()
+                sizes = sizes.cuda()
+            fake_imgs, coords = generator(z, text_status, chars, char_sizes)
             real_validity = discriminator(real_imgs)
             fake_validity = discriminator(fake_imgs)
             gradient_penalty = compute_gradient_penalty(
@@ -282,9 +269,10 @@ def train_wgan():
             optimizer_G.zero_grad()
 
             if i % opt.n_critic == 0:
-                fake_imgs, coords = generator(z)
+                fake_imgs, coords = generator(z, text_status, chars, char_sizes)
                 fake_validity = discriminator(fake_imgs)
-                g_loss = -torch.mean(fake_validity) + generator.loss_coord(coords)
+                # g_loss = -torch.mean(fake_validity) + generator.loss_coord(coords)
+                g_loss = -torch.mean(fake_validity)
                 g_loss.backward()
                 optimizer_G.step()
 
@@ -311,4 +299,5 @@ def train_wgan():
                 batches_done += opt.n_critic
 
 
-train_wgan()
+if __name__ == "__main__":
+    train_wgan()

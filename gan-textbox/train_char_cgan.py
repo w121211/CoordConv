@@ -1,3 +1,4 @@
+%%writefile /content/CoordConv/gan-textbox/train_gan_char.py
 import argparse
 import os
 import numpy as np

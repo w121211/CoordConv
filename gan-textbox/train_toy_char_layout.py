@@ -1,4 +1,4 @@
-# %%writefile /content/CoordConv/experiments/gan/munit/train_layout_by_params.py
+# %%writefile /content/CoordConv/experiments/gan/munit/train_toy_char_layout.py
 import argparse
 import os
 import numpy as np
@@ -19,7 +19,9 @@ from PIL import Image, ImageDraw, ImageFont
 from faker import Faker
 
 # from .train_gan_char import Generator as CharGenerator
-from models.gan import PasteLine, Discriminator, compute_gradient_penalty
+# from models import PasteLine, Discriminator, compute_gradient_penalty
+from models.craft import CRAFT
+
 
 # -------------------------------
 # Toy experiment:
@@ -96,10 +98,11 @@ img_shape = (opt.channels, opt.img_size, opt.img_size)
 # Define models
 # -------------------------------
 
-
 class LayoutGenerator(nn.Module):
     def __init__(self, in_dim=10):
         super(LayoutGenerator, self).__init__()
+        self.craft = CRAFT()
+        
 
         def block(in_feat, out_feat, normalize=True):
             layers = [nn.Linear(in_feat, out_feat)]
@@ -148,7 +151,12 @@ class LayoutGenerator(nn.Module):
 # -------------------------------
 
 
-def text_to_char_images(text, font="./Roboto-Regular.ttf", font_size=14, out_size=14):
+def text_to_char_images(
+    text,
+    font="/notebooks/post-generator/asset/fonts_en/Roboto/Roboto-Regular.ttf",
+    font_size=14,
+    out_size=14,
+):
     font = ImageFont.truetype(font, font_size)
     transform = transforms.ToTensor()
     chars, sizes = [], []
