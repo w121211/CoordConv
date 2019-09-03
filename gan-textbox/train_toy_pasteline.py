@@ -294,9 +294,17 @@ def train_wgan():
                         )
                     )
                     print(coords[0])
+                    print(torch.mean(real_validity).item())
+                    print(torch.mean(fake_validity).item())
                     save_image(
                         fake_imgs.data[:25],
-                        "images/%d.png" % batches_done,
+                        "images/%06d.png" % batches_done,
+                        nrow=5,
+                        normalize=True,
+                    )
+                    save_image(
+                        real_imgs.data[:25],
+                        "images/%06d_real.png" % batches_done,
                         nrow=5,
                         normalize=True,
                     )

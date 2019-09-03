@@ -183,53 +183,53 @@ class Generator(nn.Module):
         return img
 
 
+# class Discriminator(nn.Module):
+#     def __init__(self, img_shape):
+#         super(Discriminator, self).__init__()
+#         self.model = nn.Sequential(
+#             nn.Linear(int(np.prod(img_shape)), 512),
+#             nn.LeakyReLU(0.2, inplace=True),
+#             nn.Linear(512, 256),
+#             nn.LeakyReLU(0.2, inplace=True),
+#             nn.Linear(256, 1),
+#         )
+
+#     def forward(self, img):
+#         img_flat = img.view(img.shape[0], -1)
+#         validity = self.model(img_flat)
+#         return validity
+
+
 class Discriminator(nn.Module):
     def __init__(self, img_shape):
         super(Discriminator, self).__init__()
+
+        def discriminator_block(in_filters, out_filters, bn=True):
+            block = [
+                nn.Conv2d(in_filters, out_filters, 3, 2, 1),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Dropout2d(0.25),
+            ]
+            if bn:
+                block.append(nn.BatchNorm2d(out_filters, 0.8))
+            return block
+
         self.model = nn.Sequential(
-            nn.Linear(int(np.prod(img_shape)), 512),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(512, 256),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(256, 1),
+            *discriminator_block(img_shape[0], 16, bn=False),
+            *discriminator_block(16, 32),
+            *discriminator_block(32, 64),
+            *discriminator_block(64, 128),
         )
 
+        ds_size = img_shape[1] // 2 ** 4
+        self.adv_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, 1), nn.Sigmoid())
+
     def forward(self, img):
-        img_flat = img.view(img.shape[0], -1)
-        validity = self.model(img_flat)
+        out = self.model(img)
+        out = out.view(out.shape[0], -1)
+        validity = self.adv_layer(out)
+        # print(validity.shape)
         return validity
-
-
-# class Discriminator(nn.Module):
-#     def __init__(self):
-#         super(Discriminator, self).__init__()
-
-#         def discriminator_block(in_filters, out_filters, bn=True):
-#             block = [
-#                 nn.Conv2d(in_filters, out_filters, 3, 2, 1),
-#                 nn.LeakyReLU(0.2, inplace=True),
-#                 nn.Dropout2d(0.25),
-#             ]
-#             if bn:
-#                 block.append(nn.BatchNorm2d(out_filters, 0.8))
-#             return block
-
-#         self.model = nn.Sequential(
-#             *discriminator_block(img_shape[0], 16, bn=False),
-#             *discriminator_block(16, 32),
-#             *discriminator_block(32, 64),
-#             *discriminator_block(64, 128),
-#         )
-
-#         ds_size = img_shape[1] // 2 ** 4
-#         self.adv_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, 1), nn.Sigmoid())
-
-#     def forward(self, img):
-#         out = self.model(img)
-#         out = out.view(out.shape[0], -1)
-#         validity = self.adv_layer(out)
-#         # print(validity.shape)
-#         return validity
 
 
 def compute_gradient_penalty(D, real_samples, fake_samples):
