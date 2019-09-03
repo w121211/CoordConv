@@ -137,8 +137,9 @@ class LayoutGenerator(nn.Module):
         return loss
 
     def forward(self, z, text_status, chars, char_sizes):
-        x = torch.cat([z, text_status], dim=1)
-        coord = self.model(x)
+        # x = torch.cat([z, text_status], dim=1)
+        # coord = self.model(x)
+        coord = self.model(text_status)
         coord = opt.img_size * coord
         return self.painter(coord, chars, char_sizes), coord
 
@@ -215,6 +216,59 @@ class MyDataset(Dataset):
 # -------------------------------
 # Training GAN
 # -------------------------------
+
+def train_g_supervised():
+    dataloader = torch.utils.data.DataLoader(
+        MyDataset(num_samples=100), batch_size=opt.batch_size, shuffle=True
+    )
+    generator = LayoutGenerator(2)
+    generator.train()
+    optimizer_G = torch.optim.Adam(
+        generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2)
+    )
+    criterion = torch.nn.MSELoss()
+    
+    batches_done = 0
+    for epoch in range(opt.n_epochs):
+        for i, (real_imgs, text_status, chars, char_sizes) in enumerate(dataloader):
+            if cuda:
+                real_imgs = real_imgs.cuda()
+                text_status = text_status.cuda()
+                chars = chars.cuda()
+                char_sizes = char_sizes.cuda()
+            fake_imgs, coords = generator(None, text_status, chars, char_sizes)
+            
+            g_loss = criterion(fake_imgs, real_imgs)
+            optimizer_G.zero_grad()
+            g_loss.backward()
+            optimizer_G.step()
+
+            if batches_done % opt.sample_interval == 0:
+                print(
+                    "[Epoch %d/%d] [Batch %d/%d] [G loss: %f]"
+                    % (
+                        epoch,
+                        opt.n_epochs,
+                        i,
+                        len(dataloader),
+                        g_loss.item(),
+                    )
+                )
+                print(coords[0])
+                save_image(
+                    fake_imgs.data[:25],
+                    "images/%06d.png" % batches_done,
+                    nrow=5,
+                    normalize=True,
+                )
+                save_image(
+                    real_imgs.data[:25],
+                    "images/%06d_real.png" % batches_done,
+                    nrow=5,
+                    normalize=True,
+                )
+            batches_done += 1
+
 
 
 def train_wgan():
@@ -314,4 +368,5 @@ def train_wgan():
 
 
 if __name__ == "__main__":
-    train_wgan()
+    # train_wgan()
+    train_g_supervised()
