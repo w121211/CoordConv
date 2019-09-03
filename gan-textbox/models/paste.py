@@ -1,3 +1,4 @@
+# %%writefile /content/CoordConv/gan-textbox/models/paste.py
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import torch
@@ -77,7 +78,7 @@ class Paste2dMulti(nn.Module):
             coord: (N, 4=(x0, y0, x1, y1))
             image: (N, C, H, W)
         Return:
-            Tensor (N, C, self.im_size, self.im_size), padded image
+            padded image: (N, C, self.im_size, self.im_size)
         """
         N, C, H, W = image.shape
         y = []
@@ -96,7 +97,7 @@ class Paste2dMulti(nn.Module):
                 ]
             ):
                 # null mask
-                y.append(torch.zeros(N, self.im_size, self.im_size).type(_im.type()))
+                y.append(torch.zeros(1, C, self.im_size, self.im_size).type(_im.type()))
             else:
                 y.append(
                     F.pad(
@@ -104,7 +105,7 @@ class Paste2dMulti(nn.Module):
                         (x0, self.im_size - x1, y0, self.im_size - y1),
                         "constant",
                         0,
-                    )
+                    ).unsqueeze(0)
                 )
         return torch.cat(y, dim=0)
 
@@ -125,7 +126,8 @@ class Paste2dMulti(nn.Module):
             _im = mask * _im
             y.append(_im)
         y = torch.cat(y, 1).sum(1, True)  # TODO: change to alpha blending
-        y = torch.min(torch.ones(*y.shape), y)
+        ones = torch.ones(*y.shape).cuda() if cuda else torch.ones(*y.shape)
+        y = torch.min(ones, y)
         return y
 
 
@@ -147,7 +149,7 @@ class PasteLine(nn.Module):
         coords = []  # (N, num_chars, 4=(x0, y0, x1, y1))
         for size in char_sizes.split(1, dim=1):
             coords.append(torch.cat((coord, coord + size), dim=2))
-            mask = torch.tensor([[[1, 0]]]).float().to(coord.type())
+            mask = torch.tensor([[[1, 0]]]).float()
             mask = mask.cuda() if cuda else mask
             coord = coord + size * mask  # (x0 += w, y0)
         coords = torch.cat(coords, dim=1)

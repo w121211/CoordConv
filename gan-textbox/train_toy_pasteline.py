@@ -114,6 +114,7 @@ class LayoutGenerator(nn.Module):
             *block(64, 2, normalize=False),
             nn.Linear(2, 2),
             nn.Sigmoid(),
+            # nn.Tanh(),
         )
         # painter = Generator(in_dim=4)
         # painter.load_state_dict(torch.load(opt.model_path, map_location="cpu"))
@@ -138,6 +139,7 @@ class LayoutGenerator(nn.Module):
     def forward(self, z, text_status, chars, char_sizes):
         x = torch.cat([z, text_status], dim=1)
         coord = self.model(x)
+        coord = opt.img_size * coord
         return self.painter(coord, chars, char_sizes), coord
 
 
@@ -146,7 +148,7 @@ class LayoutGenerator(nn.Module):
 # -------------------------------
 
 
-def text_to_char_images(text, font="./Roboto-Regular.ttf", font_size=14, out_size=14):
+def text_to_char_images(text, font, font_size=14, out_size=14):
     font = ImageFont.truetype(font, font_size)
     transform = transforms.ToTensor()
     chars, sizes = [], []
@@ -169,7 +171,7 @@ class MyDataset(Dataset):
                 # transforms.Normalize([0.5], [0.5]),
             ]
         )
-        self.font = "/notebooks/post-generator/asset/fonts_en/Roboto/Roboto-Regular.ttf"
+        self.font = "./Roboto-Regular.ttf"
         self.font_size = 14
         self.out_size = 14
         self.max_chars = 10
@@ -188,7 +190,6 @@ class MyDataset(Dataset):
             )
             sizes = torch.cat([sizes, torch.zeros((padding, 2))])
         return self.transform(im), torch.tensor(text_status).float(), chars, sizes
-        # return self.transform(im)
 
     def __len__(self):
         return len(self.samples)
@@ -254,6 +255,7 @@ def train_wgan():
                 chars = chars.cuda()
                 char_sizes = char_sizes.cuda()
             fake_imgs, coords = generator(z, text_status, chars, char_sizes)
+
             real_validity = discriminator(real_imgs)
             fake_validity = discriminator(fake_imgs)
             gradient_penalty = compute_gradient_penalty(
@@ -291,6 +293,7 @@ def train_wgan():
                             g_loss.item(),
                         )
                     )
+                    print(coords[0])
                     save_image(
                         fake_imgs.data[:25],
                         "images/%d.png" % batches_done,
