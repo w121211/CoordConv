@@ -1,6 +1,4 @@
-# %%writefile /content/CoordConv/gan-textbox/train_gan_char.py
-
-
+# %%writefile /content/CoordConv/gan-textbox/train_char_transfer_gan.py
 import os
 import glob
 import argparse
@@ -20,7 +18,7 @@ from torch.autograd import Variable
 import torchvision.transforms as transforms
 from torchvision.utils import save_image
 
-from munit_models import (
+from models.munit import (
     Encoder,
     Decoder,
     MultiDiscriminator,
@@ -94,8 +92,10 @@ print(opt)
 class ImageDataset(Dataset):
     def __init__(self, root, transforms_):
         self.transform = transforms.Compose(transforms_)
-        root = "/notebooks/CoordConv-pytorch/data/fontimg"
-        src_dir = "/notebooks/CoordConv-pytorch/data/fontimg/Alegreya-Regular/"
+        # root = "/notebooks/CoordConv-pytorch/data/fontimg"
+        # src_dir = "/notebooks/CoordConv-pytorch/data/fontimg/Alegreya-Regular/"
+        root = "/content/CoordConv/data/fontimg"
+        src_dir = "/content/CoordConv/data/fontimg/Alegreya-Regular/"
 
         src_im = {}
         for f in sorted(glob.glob(src_dir + "/*.png")):
