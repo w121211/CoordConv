@@ -27,6 +27,10 @@ class Paste2dMask(nn.Module):
         return loss
 
     def forward(self, x):
+        """
+        Args:
+            x: (N, 4=(x0, y0, x1, y1))
+        """
         l = self.im_size
         N = x.shape[0]
 

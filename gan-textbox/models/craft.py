@@ -61,38 +61,36 @@ class CRAFT(nn.Module):
         """ U network """
         y = torch.cat([sources[0], sources[1]], dim=1)
         y = self.upconv1(y)
-
         y = F.interpolate(
             y, size=sources[2].size()[2:], mode="bilinear", align_corners=False
         )
+
         y = torch.cat([y, sources[2]], dim=1)
         y = self.upconv2(y)
-
         y = F.interpolate(
             y, size=sources[3].size()[2:], mode="bilinear", align_corners=False
         )
+
         y = torch.cat([y, sources[3]], dim=1)
         y = self.upconv3(y)
-
         y = F.interpolate(
             y, size=sources[4].size()[2:], mode="bilinear", align_corners=False
         )
+
         y = torch.cat([y, sources[4]], dim=1)
         feature = self.upconv4(y)
 
         y = self.conv_cls(feature)
 
         # ToDo - Remove the interpolation and make changes in the dataloader to make target width, height //2
-
         y = F.interpolate(y, size=(768, 768), mode="bilinear", align_corners=False)
 
         return y
 
 
-
 class CRAFTGenerator(nn.Module):
     def __init__(self, pretrained=False, freeze=False, output_class=1, z_dim=128):
-        super(CRAFT, self).__init__()
+        super(CRAFTGenerator, self).__init__()
 
         # Base network
         self.basenet = VGG16BN(pretrained, freeze)
@@ -123,6 +121,13 @@ class CRAFTGenerator(nn.Module):
         init_weights(self.conv_cls.modules())
 
     def forward(self, x):
+        """
+        Args:
+            x: (N, C, H, W)
+        Return:
+            mask: (N, 1, H/2, W/2)
+        """
+
         # Base network
         sources = self.basenet(x)
 
@@ -151,7 +156,6 @@ class CRAFTGenerator(nn.Module):
         y = self.conv_cls(feature)
 
         # ToDo - Remove the interpolation and make changes in the dataloader to make target width, height //2
-
-        y = F.interpolate(y, size=(768, 768), mode="bilinear", align_corners=False)
+        # y = F.interpolate(y, size=(768, 768), mode="bilinear", align_corners=False)
 
         return y

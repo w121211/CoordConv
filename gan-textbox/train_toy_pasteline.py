@@ -16,8 +16,10 @@ from torch.utils.data import DataLoader, Dataset
 import torchvision.transforms as transforms
 from torchvision.utils import save_image
 
-from models.gan import Discriminator, compute_gradient_penalty
-from models.paste import PasteLine
+# from models.wgan import Discriminator, compute_gradient_penalty
+from models.wgan import compute_gradient_penalty
+from models.sagan import Discriminator
+from models.paste import PasteLine, Paste2dMask
 
 # -------------------------------
 # Toy experiment:
@@ -107,7 +109,6 @@ class LayoutGenerator(nn.Module):
             return layers
 
         self.model = nn.Sequential(
-            # *block(in_dim, 128, normalize=False),
             nn.Linear(in_dim, 64),
             *block(64, 64, normalize=False),
             *block(64, 64, normalize=False),
@@ -118,13 +119,14 @@ class LayoutGenerator(nn.Module):
         )
         # painter = Generator(in_dim=4)
         # painter.load_state_dict(torch.load(opt.model_path, map_location="cpu"))
-        painter = PasteLine(opt.img_size, max_chars=10)
+        # painter = PasteLine(opt.img_size, max_chars=10)
+        paste = Paste2dMask(opt.img_size)
         if cuda:
-            painter.cuda()
-        painter.eval()
-        for param in painter.parameters():
+            paste.cuda()
+        paste.eval()
+        for param in paste.parameters():
             param.requires_grad = False  # freeze weight
-        self.painter = painter
+        self.paste = paste
 
     def loss_coord(self, coord):
         x0 = coord[:, 0] * opt.img_size
@@ -136,12 +138,31 @@ class LayoutGenerator(nn.Module):
         )
         return loss
 
+    def _token(self, tk, x0, y0):
+        transform = transforms.ToTensor()
+        font = ImageFont.truetype("./Roboto-Regular.ttf", 14)
+        im = Image.new("L", (opt.img_size, opt.img_size))
+        draw = ImageDraw.Draw(im)
+        draw.text((x0, y0), tk, font=font, fill=255)
+        return transform(im)
+    
     def forward(self, z, text_status, chars, char_sizes):
-        # x = torch.cat([z, text_status], dim=1)
-        # coord = self.model(x)
-        coord = self.model(text_status)
-        coord = opt.img_size * coord
-        return self.painter(coord, chars, char_sizes), coord
+        x = torch.cat([z, text_status], dim=1)
+        coord0 = self.model(x)
+        coord1 = coord0 + text_status
+        coord = torch.cat((coord0, coord1), dim=1)
+
+        tk = []
+        for i in range(len(chars)):
+            _coord = coord[i] * opt.img_size
+            _tk = self._token(chars[i], _coord[0].item(), _coord[1].item())
+            tk.append(_tk.unsqueeze(0))
+        tk = torch.cat(tk, dim=0)
+        img = self.paste(coord) * tk
+        # coord = self.model(text_status)
+        # coord = opt.img_size * coord
+        # return self.paste(coord, chars, char_sizes), coord
+        return img, coord * opt.img_size
 
 
 # -------------------------------
@@ -178,29 +199,60 @@ class MyDataset(Dataset):
         self.max_chars = 10
         self.img_size = img_size
         self.samples = self._sample(num_samples)
+        # self.samples = self._sample_mask(num_samples)
+
+    # def __getitem__(self, index):
+    #     im, text_status, text = self.samples[index]
+    #     chars, sizes = text_to_char_images(
+    #         text[: self.max_chars], self.font, self.font_size, self.out_size
+    #     )
+    #     padding = self.max_chars - len(text)
+    #     if padding > 0:
+    #         chars = torch.cat(
+    #             [chars, torch.zeros((padding, 1, self.out_size, self.out_size))]
+    #         )
+    #         sizes = torch.cat([sizes, torch.zeros((padding, 2))])
+    #     return self.transform(im), torch.tensor(text_status).float(), chars, sizes
+
+    # def __getitem__(self, index):
+    #     img, sizes = self.samples[index]
+    #     return img, sizes, torch.zeros((1,)), torch.zeros((1,))
 
     def __getitem__(self, index):
         im, text_status, text = self.samples[index]
-        chars, sizes = text_to_char_images(
-            text[: self.max_chars], self.font, self.font_size, self.out_size
-        )
-        padding = self.max_chars - len(text)
-        if padding > 0:
-            chars = torch.cat(
-                [chars, torch.zeros((padding, 1, self.out_size, self.out_size))]
-            )
-            sizes = torch.cat([sizes, torch.zeros((padding, 2))])
-        return self.transform(im), torch.tensor(text_status).float(), chars, sizes
+        return self.transform(im), torch.tensor(text_status).float(), text, torch.zeros((1,))
 
     def __len__(self):
         return len(self.samples)
 
+    def _sample_mask(self, num_samples):
+        m = Paste2dMask(self.img_size)
+        m.eval()
+        # transform = transforms.ToPILImage()
+        samples = []
+        for _ in range(num_samples):
+            tk = "A"
+            tk_w, tk_h = font.getsize(tk)
+            im = Image.new("L", (self.img_size, self.img_size))
+            draw = ImageDraw.Draw(im)
+            x0, y0 = (self.img_size - tk_w) / 2, (self.img_size - tk_h) / 2
+            draw.text((x0, y0), tk, font=font, fill=255)
+            # sizes = np.random.uniform(0.1, 0.8, 2)
+            # coord0 = (1-sizes) / 2  # (x0, y0)
+            coord1 = coord0 + sizes  # (x1, y1)
+            # x = torch.tensor([np.concatenate((coord0, coord1))]).float()
+            # x = m(x)
+            # samples.append((x[0], torch.tensor(sizes).float()))
+        return samples
+    
     def _sample(self, num_samples):
         fake = Faker()
         font = ImageFont.truetype(self.font, self.font_size)
         samples = []
-        for _ in range(num_samples):
-            tk = fake.word()
+        # for _ in range(num_samples):
+        for ch in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+            # tk = fake.word()
+            tk = ch
             tk_w, tk_h = font.getsize(tk)
             im = Image.new("L", (self.img_size, self.img_size))
             draw = ImageDraw.Draw(im)
@@ -217,17 +269,22 @@ class MyDataset(Dataset):
 # Training GAN
 # -------------------------------
 
+
 def train_g_supervised():
     dataloader = torch.utils.data.DataLoader(
         MyDataset(num_samples=100), batch_size=opt.batch_size, shuffle=True
     )
     generator = LayoutGenerator(2)
     generator.train()
+    criterion = torch.nn.MSELoss()
+    if cuda:
+        generator.cuda()
+        criterion.cuda()
+
     optimizer_G = torch.optim.Adam(
         generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2)
     )
-    criterion = torch.nn.MSELoss()
-    
+
     batches_done = 0
     for epoch in range(opt.n_epochs):
         for i, (real_imgs, text_status, chars, char_sizes) in enumerate(dataloader):
@@ -237,7 +294,7 @@ def train_g_supervised():
                 chars = chars.cuda()
                 char_sizes = char_sizes.cuda()
             fake_imgs, coords = generator(None, text_status, chars, char_sizes)
-            
+
             g_loss = criterion(fake_imgs, real_imgs)
             optimizer_G.zero_grad()
             g_loss.backward()
@@ -246,13 +303,7 @@ def train_g_supervised():
             if batches_done % opt.sample_interval == 0:
                 print(
                     "[Epoch %d/%d] [Batch %d/%d] [G loss: %f]"
-                    % (
-                        epoch,
-                        opt.n_epochs,
-                        i,
-                        len(dataloader),
-                        g_loss.item(),
-                    )
+                    % (epoch, opt.n_epochs, i, len(dataloader), g_loss.item())
                 )
                 print(coords[0])
                 save_image(
@@ -270,7 +321,6 @@ def train_g_supervised():
             batches_done += 1
 
 
-
 def train_wgan():
     dataloader = torch.utils.data.DataLoader(
         MyDataset(num_samples=100), batch_size=opt.batch_size, shuffle=True
@@ -278,8 +328,8 @@ def train_wgan():
     lambda_gp = 10
 
     generator = LayoutGenerator(opt.latent_dim + 2)
-    discriminator = Discriminator(img_shape)
-    loss_restore = torch.nn.MSELoss()
+    # generator = LayoutGenerator(2)
+    discriminator = Discriminator(img_shape[0], img_shape[1])
 
     if cuda:
         generator.cuda()
@@ -363,10 +413,9 @@ def train_wgan():
                         normalize=True,
                     )
                     # torch.save(generator.state_dict(), opt.save_path)
-
                 batches_done += opt.n_critic
 
 
 if __name__ == "__main__":
-    # train_wgan()
-    train_g_supervised()
+    train_wgan()
+    # train_g_supervised()

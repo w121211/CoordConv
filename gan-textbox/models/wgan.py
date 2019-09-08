@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as transforms
-from torchsummary import summary
 import torch.autograd as autograd
 from torch.autograd import Variable
 
@@ -155,6 +154,7 @@ class ResnetGenerator(nn.Module):
 class Generator(nn.Module):
     def __init__(self, img_shape, in_dim=100):
         super(Generator, self).__init__()
+        self.img_shape = img_shape
 
         def block(in_feat, out_feat, normalize=True):
             layers = [nn.Linear(in_feat, out_feat)]
@@ -179,7 +179,7 @@ class Generator(nn.Module):
 
     def forward(self, z):
         img = self.model(z)
-        img = img.view(img.shape[0], *img_shape)
+        img = img.view(z.shape[0], *self.img_shape)
         return img
 
 
