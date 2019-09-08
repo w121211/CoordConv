@@ -3,5 +3,6 @@
     "python.formatting.provider": "black",
     // workaround for vscode remote docker: switch back from sh to bash
     "terminal.integrated.shell.linux": "/bin/bash",
-    "git.ignoreLimitWarning": true
+    "git.ignoreLimitWarning": true,
+    "editor.formatOnSave": true
 }

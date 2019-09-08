@@ -195,7 +195,7 @@ class MLP(nn.Module):
 
 
 class MultiDiscriminator(nn.Module):
-    def __init__(self, in_channels=3):
+    def __init__(self, in_channels=3, style_dim=0):
         super(MultiDiscriminator, self).__init__()
 
         def discriminator_block(in_filters, out_filters, normalize=True):

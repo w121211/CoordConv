@@ -8,6 +8,7 @@ import time
 import sys
 import numpy as np
 from PIL import Image
+import PIL.ImageOps
 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -89,13 +90,20 @@ opt = parser.parse_args()
 print(opt)
 
 
-class ImageDataset(Dataset):
-    def __init__(self, root, transforms_):
-        self.transform = transforms.Compose(transforms_)
-        # root = "/notebooks/CoordConv-pytorch/data/fontimg"
-        # src_dir = "/notebooks/CoordConv-pytorch/data/fontimg/Alegreya-Regular/"
-        root = "/content/CoordConv/data/fontimg"
-        src_dir = "/content/CoordConv/data/fontimg/Alegreya-Regular/"
+class FontDataset(Dataset):
+    def __init__(self):
+        self.transform = transforms.Compose(
+            [
+                transforms.Resize((opt.img_height, opt.img_width), Image.BICUBIC),
+                transforms.ToTensor(),
+                # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                transforms.Normalize((0.5,), (0.5,)),
+            ]
+        )
+        root = "/notebooks/CoordConv-pytorch/data/fontimg"
+        src_dir = "/notebooks/CoordConv-pytorch/data/fontimg/Roboto-Regular/"
+        #         root = "/content/CoordConv/data/fontimg"
+        #         src_dir = "/content/CoordConv/data/fontimg/Roboto-Regular/"
 
         src_im = {}
         for f in sorted(glob.glob(src_dir + "/*.png")):
@@ -113,10 +121,16 @@ class ImageDataset(Dataset):
 
     def __getitem__(self, index):
         src, dst = self.samples[index]
-        img_A = self.transform(Image.open(src))
-        img_B = self.transform(Image.open(dst))
+        
+        im = Image.open(src)
+        im = PIL.ImageOps.invert(im)
+        X11 = self.transform(im)
+        
+        im = Image.open(dst)
+        im = PIL.ImageOps.invert(im)
+        X12 = self.transform(im)
 
-        return {"A": img_A, "B": img_B}
+        return {"X11": X11, "X12": X12}
 
     def __len__(self):
         return len(self.samples)
@@ -127,8 +141,6 @@ cuda = torch.cuda.is_available()
 # Create sample and checkpoint directories
 os.makedirs("images/%s" % opt.dataset_name, exist_ok=True)
 os.makedirs("saved_models/%s" % opt.dataset_name, exist_ok=True)
-
-criterion_recon = torch.nn.L1Loss()
 
 # Initialize encoders, generators and discriminators
 Enc1 = Encoder(
@@ -145,30 +157,14 @@ Dec1 = Decoder(
     n_residual=opt.n_residual,
     style_dim=opt.style_dim,
 )
-Enc2 = Encoder(
-    in_channels=1,
-    dim=opt.dim,
-    n_downsample=opt.n_downsample,
-    n_residual=opt.n_residual,
-    style_dim=opt.style_dim,
-)
-Dec2 = Decoder(
-    out_channels=1,
-    dim=opt.dim,
-    n_upsample=opt.n_downsample,
-    n_residual=opt.n_residual,
-    style_dim=opt.style_dim,
-)
 D1 = MultiDiscriminator(in_channels=1)
-D2 = MultiDiscriminator(in_channels=1)
+
+criterion_recon = torch.nn.L1Loss()
 
 if cuda:
     Enc1 = Enc1.cuda()
     Dec1 = Dec1.cuda()
-    Enc2 = Enc2.cuda()
-    Dec2 = Dec2.cuda()
     D1 = D1.cuda()
-    D2 = D2.cuda()
     criterion_recon.cuda()
 
 if opt.epoch != 0:
@@ -179,26 +175,14 @@ if opt.epoch != 0:
     Dec1.load_state_dict(
         torch.load("saved_models/%s/Dec1_%d.pth" % (opt.dataset_name, opt.epoch))
     )
-    Enc2.load_state_dict(
-        torch.load("saved_models/%s/Enc2_%d.pth" % (opt.dataset_name, opt.epoch))
-    )
-    Dec2.load_state_dict(
-        torch.load("saved_models/%s/Dec2_%d.pth" % (opt.dataset_name, opt.epoch))
-    )
     D1.load_state_dict(
         torch.load("saved_models/%s/D1_%d.pth" % (opt.dataset_name, opt.epoch))
-    )
-    D2.load_state_dict(
-        torch.load("saved_models/%s/D2_%d.pth" % (opt.dataset_name, opt.epoch))
     )
 else:
     # Initialize weights
     Enc1.apply(weights_init_normal)
     Dec1.apply(weights_init_normal)
-    Enc2.apply(weights_init_normal)
-    Dec2.apply(weights_init_normal)
     D1.apply(weights_init_normal)
-    D2.apply(weights_init_normal)
 
 # Loss weights
 lambda_gan = 1
@@ -209,14 +193,11 @@ lambda_cyc = 0
 
 # Optimizers
 optimizer_G = torch.optim.Adam(
-    itertools.chain(
-        Enc1.parameters(), Dec1.parameters(), Enc2.parameters(), Dec2.parameters()
-    ),
+    itertools.chain(Enc1.parameters(), Dec1.parameters()),
     lr=opt.lr,
     betas=(opt.b1, opt.b2),
 )
 optimizer_D1 = torch.optim.Adam(D1.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-optimizer_D2 = torch.optim.Adam(D2.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 
 # Learning rate update schedulers
 lr_scheduler_G = torch.optim.lr_scheduler.LambdaLR(
@@ -225,26 +206,12 @@ lr_scheduler_G = torch.optim.lr_scheduler.LambdaLR(
 lr_scheduler_D1 = torch.optim.lr_scheduler.LambdaLR(
     optimizer_D1, lr_lambda=LambdaLR(opt.n_epochs, opt.epoch, opt.decay_epoch).step
 )
-lr_scheduler_D2 = torch.optim.lr_scheduler.LambdaLR(
-    optimizer_D2, lr_lambda=LambdaLR(opt.n_epochs, opt.epoch, opt.decay_epoch).step
-)
 
 Tensor = torch.cuda.FloatTensor if cuda else torch.Tensor
 
 # Configure dataloaders
 dataloader = DataLoader(
-    ImageDataset(
-        "../../data/%s" % opt.dataset_name,
-        transforms_=[
-            transforms.Resize((opt.img_height, opt.img_width), Image.BICUBIC),
-            transforms.ToTensor(),
-            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-            transforms.Normalize((0.5,), (0.5,)),
-        ],
-    ),
-    batch_size=opt.batch_size,
-    shuffle=True,
-    num_workers=opt.n_cpu,
+    FontDataset(), batch_size=opt.batch_size, shuffle=True, num_workers=opt.n_cpu
 )
 
 
@@ -252,7 +219,7 @@ def sample_images(batches_done):
     """Saves a generated sample from the validation set"""
     imgs = next(iter(dataloader))
     img_samples = None
-    for img1, img2 in zip(imgs["A"], imgs["B"]):
+    for img1, img2 in zip(imgs["X11"], imgs["X12"]):
         # Create copies of image
         X1 = img1.unsqueeze(0).repeat(opt.style_dim, 1, 1, 1)
         X1 = Variable(X1.type(Tensor))
@@ -290,14 +257,13 @@ fake = 0
 prev_time = time.time()
 for epoch in range(opt.epoch, opt.n_epochs):
     for i, batch in enumerate(dataloader):
-
-        # Set model input
-        X1 = Variable(batch["A"].type(Tensor))
-        X2 = Variable(batch["B"].type(Tensor))
-
-        # Sampled style codes
-        style_1 = Variable(torch.randn(X1.size(0), opt.style_dim, 1, 1).type(Tensor))
-        style_2 = Variable(torch.randn(X1.size(0), opt.style_dim, 1, 1).type(Tensor))
+        X11 = batch["X11"]
+        X12 = batch["X12"] # same content, different style
+        sz1 = torch.randn(X11.size(0), opt.style_dim, 1, 1)
+        if cuda:
+            X11.cuda()
+            X12.cuda()
+            sz1.cuda()
 
         # -------------------------------
         #  Train Encoders and Generators
@@ -306,85 +272,78 @@ for epoch in range(opt.epoch, opt.n_epochs):
         optimizer_G.zero_grad()
 
         # Get shared latent representation
-        c_code_1, s_code_1 = Enc1(X1)
-        c_code_2, s_code_2 = Enc2(X2)
+        c1, s1 = Enc1(X11)
+        c1_, s2 = Enc1(X12)
 
         # Reconstruct images
-        X11 = Dec1(c_code_1, s_code_1)
-        X22 = Dec2(c_code_2, s_code_2)
+        Y11 = Dec1(c1, s1)
+        Y12 = Dec1(c1, s2)
+        Y1_1 = Dec1(c1_, s1)
+        Y1_2 = Dec1(c1_, s2)
 
         # Translate images
-        X21 = Dec1(c_code_2, style_1)
-        X12 = Dec2(c_code_1, style_2)
+        Z11 = Dec1(c1, sz1)
 
         # Cycle translation
-        c_code_21, s_code_21 = Enc1(X21)
-        c_code_12, s_code_12 = Enc2(X12)
-        X121 = Dec1(c_code_12, s_code_1) if lambda_cyc > 0 else 0
-        X212 = Dec2(c_code_21, s_code_2) if lambda_cyc > 0 else 0
+        cz1, sz1_ = Enc1(Z11)
+        # c_code_21, s_code_21 = Enc1(X21)
+        # c_code_12, s_code_12 = Enc2(X12)
+        # X121 = Dec1(c_code_12, s_code_1) if lambda_cyc > 0 else 0
+        # X212 = Dec2(c_code_21, s_code_2) if lambda_cyc > 0 else 0
 
         # Losses
-        loss_GAN_1 = lambda_gan * D1.compute_loss(X21, valid)
-        loss_GAN_2 = lambda_gan * D2.compute_loss(X12, valid)
-        loss_ID_1 = lambda_id * criterion_recon(X11, X1)
-        loss_ID_2 = lambda_id * criterion_recon(X22, X2)
-        loss_s_1 = lambda_style * criterion_recon(s_code_21, style_1)
-        loss_s_2 = lambda_style * criterion_recon(s_code_12, style_2)
-        loss_c_1 = lambda_cont * criterion_recon(c_code_12, c_code_1.detach())
-        loss_c_2 = lambda_cont * criterion_recon(c_code_21, c_code_2.detach())
-        loss_cyc_1 = lambda_cyc * criterion_recon(X121, X1) if lambda_cyc > 0 else 0
-        loss_cyc_2 = lambda_cyc * criterion_recon(X212, X2) if lambda_cyc > 0 else 0
+        loss_GAN_1 = lambda_gan * D1.compute_loss(Y12, valid)
+        loss_GAN_2 = lambda_gan * D1.compute_loss(Y1_1, valid)
+        loss_GAN_3 = lambda_gan * D1.compute_loss(Z11, valid)
+        loss_ID_1 = lambda_id * criterion_recon(Y11, X11)
+        loss_ID_2 = lambda_id * criterion_recon(Y1_1, X11)
+        loss_ID_3 = lambda_id * criterion_recon(Y12, X12)
+        loss_ID_4 = lambda_id * criterion_recon(Y1_2, X12)
+        loss_s_1 = lambda_style * criterion_recon(sz1, sz1_.detach())
+        loss_c_1 = lambda_cont * criterion_recon(cz1, c1.detach())
+        # loss_cyc_1 = lambda_cyc * criterion_recon(X121, X1) if lambda_cyc > 0 else 0
+        # loss_cyc_2 = lambda_cyc * criterion_recon(X212, X2) if lambda_cyc > 0 else 0
 
-        # Total loss
         loss_G = (
             loss_GAN_1
             + loss_GAN_2
+            + loss_GAN_3
             + loss_ID_1
             + loss_ID_2
+            + loss_ID_3
+            + loss_ID_4
             + loss_s_1
-            + loss_s_2
             + loss_c_1
-            + loss_c_2
-            + loss_cyc_1
-            + loss_cyc_2
         )
 
         loss_G.backward()
         optimizer_G.step()
 
         # -----------------------
-        #  Train Discriminator 1
+        #  Train Discriminator
         # -----------------------
 
         optimizer_D1.zero_grad()
 
-        loss_D1 = D1.compute_loss(X1, valid) + D1.compute_loss(X21.detach(), fake)
+        loss_D1 = (
+            D1.compute_loss(X11, valid)
+            + D1.compute_loss(X12, valid)
+            + D1.compute_loss(Z11.detach(), fake)
+            + D1.compute_loss(Y1_1.detach(), fake)
+        )
 
         loss_D1.backward()
         optimizer_D1.step()
-
-        # -----------------------
-        #  Train Discriminator 2
-        # -----------------------
-
-        optimizer_D2.zero_grad()
-
-        loss_D2 = D2.compute_loss(X2, valid) + D2.compute_loss(X12.detach(), fake)
-
-        loss_D2.backward()
-        optimizer_D2.step()
 
         # --------------
         #  Log Progress
         # --------------
 
-        # Determine approximate time left
         batches_done = epoch * len(dataloader) + i
         batches_left = opt.n_epochs * len(dataloader) - batches_done
         time_left = datetime.timedelta(seconds=batches_left * (time.time() - prev_time))
         prev_time = time.time()
 
-        # Print log
         sys.stdout.write(
             "\r[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] ETA: %s"
             % (
@@ -392,20 +351,34 @@ for epoch in range(opt.epoch, opt.n_epochs):
                 opt.n_epochs,
                 i,
                 len(dataloader),
-                (loss_D1 + loss_D2).item(),
+                loss_D1.item(),
                 loss_G.item(),
                 time_left,
             )
         )
 
-        # If at sample interval save image
         if batches_done % opt.sample_interval == 0:
-            sample_images(batches_done)
+            # sample_images(batches_done)
+            # X1 = img1.unsqueeze(0).repeat(opt.style_dim, 1, 1, 1)
+            # X1 = Variable(X1.type(Tensor))
+            # Get random style codes
+            # s_code = np.random.uniform(-1, 1, (opt.style_dim, opt.style_dim))
+            # s_code = Variable(Tensor(s_code))
+            # Generate samples
+            # c_code_1, _ = Enc1(X1)
+            # X12 = Dec2(c_code_1, s_code)
+            # Concatenate samples horisontally
+            # X12 = torch.cat([x for x in X12.data.cpu()], -1)
+            X = torch.cat((X11, Y12.data), -1)
+            X = torch.cat((X, Y1_2.data), -1)
+            X = torch.cat((X, Z11.data), -1)
+            save_image(
+                X[:5], "images/%6d.png" % (batches_done,), nrow=5, normalize=True
+            )
 
     # Update learning rates
     lr_scheduler_G.step()
     lr_scheduler_D1.step()
-    lr_scheduler_D2.step()
 
     if opt.checkpoint_interval != -1 and epoch % opt.checkpoint_interval == 0:
         # Save model checkpoints
@@ -416,15 +389,6 @@ for epoch in range(opt.epoch, opt.n_epochs):
             Dec1.state_dict(), "saved_models/%s/Dec1_%d.pth" % (opt.dataset_name, epoch)
         )
         torch.save(
-            Enc2.state_dict(), "saved_models/%s/Enc2_%d.pth" % (opt.dataset_name, epoch)
-        )
-        torch.save(
-            Dec2.state_dict(), "saved_models/%s/Dec2_%d.pth" % (opt.dataset_name, epoch)
-        )
-        torch.save(
             D1.state_dict(), "saved_models/%s/D1_%d.pth" % (opt.dataset_name, epoch)
-        )
-        torch.save(
-            D2.state_dict(), "saved_models/%s/D2_%d.pth" % (opt.dataset_name, epoch)
         )
 
