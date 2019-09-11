@@ -120,8 +120,6 @@ class Self_Attn(nn.Module):
 
 
 class Generator(nn.Module):
-    """Generator."""
-
     def __init__(self, batch_size, image_size=64, z_dim=100, conv_dim=64, out_channels=3):
         super(Generator, self).__init__()
         self.imsize = image_size
@@ -188,8 +186,6 @@ class Generator(nn.Module):
         return out, p1, p2
 
 class Discriminator(nn.Module):
-    """Discriminator, Auxiliary Classifier."""
-
     def __init__(self, batch_size=64, image_size=64, conv_dim=64, in_channels=3):
         super(Discriminator, self).__init__()
         self.imsize = image_size
@@ -198,9 +194,11 @@ class Discriminator(nn.Module):
         layer3 = []
         last = []
 
-        layer1.append(SpectralNorm(nn.Conv2d(in_channels, conv_dim, 4, 2, 1)))
-        layer1.append(nn.LeakyReLU(0.1))
-
+        layer1 += [
+            SpectralNorm(nn.Conv2d(in_channels, conv_dim, 4, 2, 1)),
+            nn.LeakyReLU(0.1),
+        ]
+        
         curr_dim = conv_dim
 
         layer2.append(SpectralNorm(nn.Conv2d(curr_dim, curr_dim * 2, 4, 2, 1)))

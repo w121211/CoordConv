@@ -19,8 +19,7 @@ from torch.backends import cudnn
 import torchvision.transforms as transforms
 from torchvision.utils import save_image
 
-# from models.craft import CRAFTGenerator
-# from models.wgan import Generator, Discriminator, compute_gradient_penalty
+from models.craft import CRAFTGenerator
 from models.sagan import Generator, Discriminator
 from config import get_parameters
 from utils import tensor2var, denorm
@@ -42,50 +41,57 @@ from utils import tensor2var, denorm
 
 
 class LayoutGenerator(nn.Module):
-    def __init__(self, in_dim=10):
+    def __init__(self, opt):
         super(LayoutGenerator, self).__init__()
-        self.craft = CRAFT()
+        self.craft = CRAFTGenerator(output_class=1, z_dim=opt.z_dim, img_size=opt.imsize)
 
-        def block(in_feat, out_feat, normalize=True):
-            layers = [nn.Linear(in_feat, out_feat)]
-            if normalize:
-                layers.append(nn.BatchNorm1d(out_feat, 0.8))
-            layers.append(nn.LeakyReLU(0.2, inplace=True))
-            return layers
+        # def block(in_feat, out_feat, normalize=True):
+        #     layers = [nn.Linear(in_feat, out_feat)]
+        #     if normalize:
+        #         layers.append(nn.BatchNorm1d(out_feat, 0.8))
+        #     layers.append(nn.LeakyReLU(0.2, inplace=True))
+        #     return layers
 
-        self.model = nn.Sequential(
-            # *block(in_dim, 128, normalize=False),
-            nn.Linear(in_dim, 64),
-            *block(64, 64, normalize=False),
-            *block(64, 64, normalize=False),
-            *block(64, 2, normalize=False),
-            nn.Linear(2, 2),
-            nn.Sigmoid(),
-        )
+        # self.model = nn.Sequential(
+        #     # *block(in_dim, 128, normalize=False),
+        #     nn.Linear(in_dim, 64),
+        #     *block(64, 64, normalize=False),
+        #     *block(64, 64, normalize=False),
+        #     *block(64, 2, normalize=False),
+        #     nn.Linear(2, 2),
+        #     nn.Sigmoid(),
+        # )
         # painter = Generator(in_dim=4)
         # painter.load_state_dict(torch.load(opt.model_path, map_location="cpu"))
-        painter = PasteLine(opt.img_size, max_chars=10)
-        if cuda:
-            painter.cuda()
-        painter.eval()
-        for param in painter.parameters():
-            param.requires_grad = False  # freeze weight
-        self.painter = painter
+        # painter = PasteLine(opt.img_size, max_chars=10)
+        # if cuda:
+        #     painter.cuda()
+        # painter.eval()
+        # for param in painter.parameters():
+        #     param.requires_grad = False  # freeze weight
+        # self.painter = painter
 
-    def loss_coord(self, coord):
-        x0 = coord[:, 0] * opt.img_size
-        y0 = coord[:, 1] * opt.img_size
-        x1 = coord[:, 2] * opt.img_size
-        y1 = coord[:, 3] * opt.img_size
-        loss = torch.mean(F.relu(-(x1 - x0 - 1.0))) + torch.mean(
-            F.relu(-(y1 - y0 - 1.0))
-        )
-        return loss
+    def forward(self, z, img, img2x):
+        """
+        Args:
+            z: (N, z_dim)
+            img (N, C, H, W)
+            img2x: (N, C, H*2, W*2), 2x size of `img`
+        Return:
+            mask: (N, C=1, H, W)
+            heat: (N, C=3, H, W)
+        """
+        mask = self.craft(img2x, z)  # mask: (N, 1, H, W)
+        
+        # convert mask to heatmap & apply to `img_small`
+        heat = mask.repeat([1, 3,1,1])  # (N, 1, H, W) to (N, 3, H, W)
+        heat = heat.permute(0, 2, 3, 1)  # (N, H, W, C)
+        heat = torch.mul(heat, torch.tensor([[1., -1., 1.]]))  # map color
+        heat = heat.permute(0, 3, 1, 2)  # (N, C, H, W)
+        mask = (mask > -0.95).float()  # convert to binary
+        heat = (1. - mask) * img + mask * heat
 
-    def forward(self, z, text_status, chars, char_sizes):
-        x = torch.cat([z, text_status], dim=1)
-        coord = self.model(x)
-        return self.painter(coord, chars, char_sizes), coord
+        return mask, heat
 
 
 # ---------------------------------------------------------------
@@ -95,20 +101,33 @@ class LayoutGenerator(nn.Module):
 
 class MyDataset(Dataset):
     def __init__(self, img_size):
-        self.transform = transforms.Compose(
+        self.post_folder = "/notebooks/CRAFT-pytorch/data"
+        self.mask_folder = "/notebooks/CRAFT-pytorch/result"
+        self.photo_folder = "/notebooks/CoordConv-pytorch/data/facebook"
+        # self.post_folder = "/tf/CRAFT-pytorch/data"
+        # self.mask_folder = "/tf/CRAFT-pytorch/result"
+        # self.photo_folder = "/tf/CoordConv/data/facebook"
+
+        norm_mean = np.array([0.5, 0.5, 0.5])
+        norm_sigma = np.array([0.5, 0.5, 0.5])
+        self.trans_rgb = transforms.Compose(
             [
-                # transforms.Resize(opt.img_size),
                 transforms.ToTensor(),
-                # transforms.Normalize((0.5,), (0.5,)),
-                # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                transforms.Normalize(norm_mean, norm_sigma),
+            ]
+        )    
+        self.trans_l = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,)),
             ]
         )
-        # self.post_folder = "/notebooks/CRAFT-pytorch/data"
-        # self.mask_folder = "/notebooks/CRAFT-pytorch/result"
-        # self.photo_folder = "/notebooks/CoordConv-pytorch/data/facebook"
-        self.post_folder = "/tf/CRAFT-pytorch/data"
-        self.mask_folder = "/tf/CRAFT-pytorch/result"
-        self.photo_folder = "/tf/CoordConv/data/facebook"
+        self.trans_pil = transforms.Compose(
+            [
+                transforms.Normalize(-(norm_mean/norm_sigma), 1 / norm_sigma),  # inverse-normalize
+                transforms.ToPILImage()
+            ]
+        )
 
         self.font = "/notebooks/post-generator/asset/fonts_en/Roboto/Roboto-Regular.ttf"
         self.font_size = 14
@@ -121,35 +140,66 @@ class MyDataset(Dataset):
 
     def __getitem__(self, index):
         f = self.posts[index]
-        # post = Image.open(f)
+        post = Image.open(f)
+        post = self._resize(post, self.img_size)
         mask = Image.open(
             os.path.join(
                 self.mask_folder, os.path.splitext(os.path.basename(f))[0] + "_mask.png"
             )
         )
         mask = self._resize(mask, self.img_size)
-        photo = Image.open(random.choice(self.photos))
-        photo = self._resize(photo, self.img_size * 2)
+        heat = self._heatmap(post, mask)
 
-        # return mask, masked_post, photo
-        return self.transform(mask), self.transform(photo)
+        # random photo for input
+        photo = Image.open(random.choice(self.photos))
+        photo = photo.convert("RGB")
+        photo2x = self._resize(photo, self.img_size * 2)
+        photo = self._resize(photo, self.img_size)
+
+        return self.trans_l(mask), heat, self.trans_rgb(photo), self.trans_rgb(photo2x)
 
     def __len__(self):
         return len(self.posts)
 
-    def _compose(self):
-        pass
+    def _heatmap(self, img, mask):
+        """
+        Args:
+            img: PIL.Image, RGB
+            mask: PIL.Image, L
+        Returns:
+            tensor (C, H, W)
+        """
+        img = self.trans_rgb(img)
+        mask = self.trans_l(mask)
 
-    def _resize(self, im, out_size):
-        size = im.size  # old_size[0] is in (width, height) format
+        heat = mask.repeat([3,1,1])  # (1, H, W) to (3, H, W)
+        heat = heat.permute(1, 2, 0)  # (H, W, C)
+        heat = torch.mul(heat, torch.tensor([[1., -1., 1.]]))  # map color
+        heat = heat.permute(2, 0, 1)  # (C, H, W)
+        mask = (mask > -0.95).float()  # convert to binary
+        heat = (1. - mask) * img + mask * heat
+        
+        return heat
+    
+    def _heatmap_pil(self, img, mask):
+        """Deprecated"""
+        heat = np.array(mask)
+        heat = np.expand_dims(heat, axis=-1)
+        heat = np.repeat(heat, 3, axis=-1)
+        heat[:, :, 1] = 1 - heat[:, :, 1]  # color transform
+
+        img.putalpha(255)
+        heat = Image.fromarray(heat)
+        heat.putalpha(mask.point(lambda x: 0 if x < 30 else 255))
+        return Image.alpha_composite(img, heat)
+
+    def _resize(self, img, out_size):
+        size = img.size  # old_size[0] is in (width, height) format
         ratio = float(out_size) / max(size)
         new_size = tuple(int(x * ratio) for x in size)
-        im = im.resize(new_size, Image.ANTIALIAS)
-        # create a new image and paste the resized on it
-
-        res = Image.new(im.mode, (out_size, out_size))
-        res.paste(im, ((out_size - new_size[0]) // 2, (out_size - new_size[1]) // 2))
-
+        img = img.resize(new_size, Image.ANTIALIAS)
+        res = Image.new(img.mode, (out_size, out_size))
+        res.paste(img, ((out_size - new_size[0]) // 2, (out_size - new_size[1]) // 2))
         return res
 
 
@@ -163,36 +213,41 @@ class Trainer(object):
         self.opt = opt
         self.dataloader = dataloader
 
-        self.G = Generator(
-            opt.batch_size, opt.imsize, opt.z_dim, opt.g_conv_dim, opt.im_channels
+        # self.G = Generator(
+        #     opt.batch_size, opt.imsize, opt.z_dim, opt.g_conv_dim, opt.im_channels
+        # )
+        self.G = LayoutGenerator(opt)
+        self.D_mask = Discriminator(
+            opt.batch_size, opt.imsize, opt.d_conv_dim, in_channels=1
         )
-        self.D = Discriminator(
-            opt.batch_size, opt.imsize, opt.d_conv_dim, opt.im_channels
+        self.D_heat = Discriminator(
+            opt.batch_size, opt.imsize, opt.d_conv_dim, in_channels=3
         )
 
         if opt.cuda:
             self.G = self.G.cuda()
-            self.D = self.D.cuda()
+            self.D_mask = self.D_mask.cuda()
+            self.D_heat = self.D_heat.cuda()
 
-        if opt.parallel:
-            self.G = nn.DataParallel(self.G)
-            self.D = nn.DataParallel(self.D)
+        # if opt.parallel:
+        #     self.G = nn.DataParallel(self.G)
+        #     self.D = nn.DataParallel(self.D)
 
         self.g_optimizer = torch.optim.Adam(
             filter(lambda p: p.requires_grad, self.G.parameters()),
             opt.g_lr,
             [opt.beta1, opt.beta2],
         )
-        self.d_optimizer = torch.optim.Adam(
-            filter(lambda p: p.requires_grad, self.D.parameters()),
+        self.d_mask_optimizer = torch.optim.Adam(
+            filter(lambda p: p.requires_grad, self.D_mask.parameters()),
             opt.d_lr,
             [opt.beta1, opt.beta2],
         )
-
-        self.c_loss = torch.nn.CrossEntropyLoss()
-
-        # print(self.G)
-        # print(self.D)
+        self.d_heat_optimizer = torch.optim.Adam(
+            filter(lambda p: p.requires_grad, self.D_heat.parameters()),
+            opt.d_lr,
+            [opt.beta1, opt.beta2],
+        )
 
         if opt.use_tensorboard:
             from logger import Logger
@@ -214,88 +269,102 @@ class Trainer(object):
 
         start_time = time.time()
         for step in range(start, self.opt.total_step):
-            self.D.train()
+            self.D_mask.train()
+            self.D_heat.train()
             self.G.train()
 
             try:
-                real_images, _ = next(data_iter)
+                real_masks, real_heats, x_photos, x_photos2x = next(data_iter)
             except:
                 data_iter = iter(self.dataloader)
-                real_images, _ = next(data_iter)
-            z = torch.randn((real_images.size(0), self.opt.z_dim))
+                real_masks, real_heats, x_photos = next(data_iter)
+            z = torch.randn((real_masks.size(0), self.opt.z_dim))
 
             if self.opt.cuda:
-                real_images = real_images.cuda()
+                real_masks = real_masks.cuda()
+                real_heats = real_heats.cuda()
+                x_photos = x_photos.cuda()
+                in_photos = in_photos.cuda()
                 z = z.cuda()
 
-            d_out_real, dr1, dr2 = self.D(real_images)
+            d_mask_out_real, _, _ = self.D_mask(real_masks)
+            d_heat_out_real, _, _= self.D_heat(real_heats)
             if self.opt.adv_loss == "wgan-gp":
-                d_loss_real = -torch.mean(d_out_real)
+                d_mask_loss_real = -torch.mean(d_mask_out_real)
+                d_heat_loss_real = -torch.mean(d_heat_out_real)
             elif self.opt.adv_loss == "hinge":
-                d_loss_real = torch.nn.ReLU()(1.0 - d_out_real).mean()
+                d_mask_loss_real = torch.nn.ReLU()(1.0 - d_mask_out_real).mean()
+                d_heat_loss_real = torch.nn.ReLU()(1.0 - d_heat_out_real).mean()
 
-            # z = tensor2var(torch.randn(real_images.size(0), self.z_dim))
-            fake_images, gf1, gf2 = self.G(z)
-            d_out_fake, df1, df2 = self.D(fake_images)
-
+            # fake_images, gf1, gf2 = self.G(z)
+            fake_masks, fake_heats = self.G(z, x_photos, x_photos2x)
+            d_mask_out_fake, _, _ = self.D_mask(fake_masks)
+            d_heat_out_fake, _, _ = self.D_heat(fake_heats)
             if self.opt.adv_loss == "wgan-gp":
-                d_loss_fake = d_out_fake.mean()
+                d_mask_loss_fake = d_mask_out_fake.mean()
+                d_heat_loss_fake = d_heat_out_fake.mean()
             elif self.opt.adv_loss == "hinge":
-                d_loss_fake = torch.nn.ReLU()(1.0 + d_out_fake).mean()
+                d_mask_loss_fake = torch.nn.ReLU()(1.0 + d_mask_out_fake).mean()
+                d_heat_loss_fake = torch.nn.ReLU()(1.0 + d_heat_out_fake).mean()
 
-            d_loss = d_loss_real + d_loss_fake
-            self.d_optimizer.zero_grad()
-            self.g_optimizer.zero_grad()
-            d_loss.backward()
-            self.d_optimizer.step()
+            d_mask_loss = d_mask_loss_real + d_mask_loss_fake
+            d_heat_loss = d_heat_loss_real + d_heat_loss_fake
+            # self.g_optimizer.zero_grad()
+            self.d_mask_optimizer.zero_grad()
+            self.d_heat_optimizer.zero_grad()
+            d_mask_loss.backward()
+            d_heat_loss.backward()
+            self.d_mask_optimizer.step()
+            self.d_heat_optimizer.step()
 
-            if self.opt.adv_loss == "wgan-gp":
-                alpha = torch.rand(real_images.size(0), 1, 1, 1).expand_as(real_images)
-                ones = torch.ones(real_images.size(0))
-                if self.opt.cuda:
-                    alpha = alpha.cuda()
-                    ones = ones.cuda()
-                
-                interpolated = alpha * real_images.data + (1 - alpha) * fake_images.data
-                interpolated.requires_grad_()
-                out, _, _ = self.D(interpolated)
+            # if self.opt.adv_loss == "wgan-gp":
+            #     alpha = torch.rand(real_images.size(0), 1, 1, 1).expand_as(real_images)
+            #     ones = torch.ones(real_images.size(0))
+            #     if self.opt.cuda:
+            #         alpha = alpha.cuda()
+            #         ones = ones.cuda()
 
-                grad = torch.autograd.grad(
-                    outputs=out,
-                    inputs=interpolated,
-                    grad_outputs=ones,
-                    retain_graph=True,
-                    create_graph=True,
-                    only_inputs=True,
-                )[0]
+            #     interpolated = alpha * real_images.data + (1 - alpha) * fake_images.data
+            #     interpolated.requires_grad_()
+            #     out, _, _ = self.D(interpolated)
 
-                grad = grad.view(grad.size(0), -1)
-                grad_l2norm = torch.sqrt(torch.sum(grad ** 2, dim=1))
-                d_loss_gp = torch.mean((grad_l2norm - 1) ** 2)
+            #     grad = torch.autograd.grad(
+            #         outputs=out,
+            #         inputs=interpolated,
+            #         grad_outputs=ones,
+            #         retain_graph=True,
+            #         create_graph=True,
+            #         only_inputs=True,
+            #     )[0]
 
-                # Backward + Optimize
-                d_loss = self.opt.lambda_gp * d_loss_gp
+            #     grad = grad.view(grad.size(0), -1)
+            #     grad_l2norm = torch.sqrt(torch.sum(grad ** 2, dim=1))
+            #     d_loss_gp = torch.mean((grad_l2norm - 1) ** 2)
 
-                self.d_optimizer.zero_grad()
-                self.g_optimizer.zero_grad()
-                d_loss.backward()
-                self.d_optimizer.step()
+            #     # Backward + Optimize
+            #     d_loss = self.opt.lambda_gp * d_loss_gp
+
+            #     self.d_optimizer.zero_grad()
+            #     self.g_optimizer.zero_grad()
+            #     d_loss.backward()
+            #     self.d_optimizer.step()
 
             # ================== Train G and gumbel ================== #
 
-            # z = tensor2var(torch.randn(real_images.size(0), self.opt.z_dim))
-            z = torch.randn((real_images.size(0), self.opt.z_dim))
+            z = torch.randn((real_masks.size(0), self.opt.z_dim))
             if self.opt.cuda:
                 z = z.cuda()
-            fake_images, _, _ = self.G(z)
+            fake_masks, fake_heats = self.G(z, x_photos, x_photos2x)
 
-            g_out_fake, _, _ = self.D(fake_images)  # batch x n
+            g_out_fake_mask, _, _ = self.D_mask(fake_masks)  # batch x n
+            g_out_fake_heat, _, _ = self.D_heat(fake_heats)  # batch x n
             if self.opt.adv_loss == "wgan-gp":
-                g_loss_fake = -g_out_fake.mean()
+                g_loss_fake = -(g_out_fake_mask.mean() + g_out_fake_heat.mean())
             elif self.opt.adv_loss == "hinge":
-                g_loss_fake = -g_out_fake.mean()
+                g_loss_fake = -(g_out_fake_mask.mean() + g_out_fake_heat.mean())
 
-            self.d_optimizer.zero_grad()
+            # self.d_mask_optimizer.zero_grad()
+            # self.d_heat_optimizer.zero_grad()
             self.g_optimizer.zero_grad()
             g_loss_fake.backward()
             self.g_optimizer.step()
@@ -304,16 +373,20 @@ class Trainer(object):
                 elapsed = time.time() - start_time
                 elapsed = str(datetime.timedelta(seconds=elapsed))
                 print(
-                    "Elapsed [{}], G_step [{}/{}], D_step[{}/{}], d_out_real: {:.4f}, "
+                    "Elapsed [{}], G_step [{}/{}], D_step[{}/{}], d_mask_loss_real: {:.4f}, d_heat_loss_real: {:.4f}, g_loss_fake: {:.4f}"
                     " ave_gamma_l3: {:.4f}, ave_gamma_l4: {:.4f}".format(
                         elapsed,
                         step + 1,
                         self.opt.total_step,
                         (step + 1),
                         self.opt.total_step,
-                        d_loss_real.item(),
-                        self.G.attn1.gamma.mean().item(),
-                        self.G.attn2.gamma.mean().item(),
+                        d_mask_loss_real.item(),
+                        d_heat_loss_real.item(),
+                        g_loss_fake.item(),
+                        0,
+                        0,
+                        # self.G.attn1.gamma.mean().item(),
+                        # self.G.attn2.gamma.mean().item(),
                     )
                 )
 
@@ -321,18 +394,34 @@ class Trainer(object):
                 # fixed_z = tensor2var(torch.randn(self.opt.batch_size, self.opt.z_dim))
                 # fake_images, _, _ = self.G(fixed_z)
                 save_image(
-                    # denorm(fake_images.data),
-                    fake_images[:25],
+                    denorm(fake_masks[:25]),
+                    # fake_masks[:25],
                     os.path.join(
-                        self.opt.sample_path, "{:06d}_fake.png".format(step + 1)
+                        self.opt.sample_path, "{:06d}_fake_mask.png".format(step + 1)
                     ),
                     nrow=5,
                 )
                 save_image(
-                    # denorm(real_images),
-                    real_images[:25],
+                    denorm(fake_heats[:25]),
+                    # fake_masks[:25],
                     os.path.join(
-                        self.opt.sample_path, "{:06d}_real.png".format(step + 1)
+                        self.opt.sample_path, "{:06d}_fake_heat.png".format(step + 1)
+                    ),
+                    nrow=5,
+                )
+                save_image(
+                    denorm(real_masks[:25]),
+                    # real_masks[:25],
+                    os.path.join(
+                        self.opt.sample_path, "{:06d}_real_mask.png".format(step + 1)
+                    ),
+                    nrow=5,
+                )
+                save_image(
+                    denorm(real_heats[:25]),
+                    # real_masks[:25],
+                    os.path.join(
+                        self.opt.sample_path, "{:06d}_real_heat.png".format(step + 1)
                     ),
                     nrow=5,
                 )

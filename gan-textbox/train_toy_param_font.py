@@ -13,7 +13,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
-from torch.backends import cudnn
 
 # from torchvision import datasets
 import torchvision.transforms as transforms
@@ -366,7 +365,7 @@ if __name__ == "__main__":
 
     # train_wgan()
     if opt.cuda:
-        cudnn.benchmark = True
+        torch.backends.cudnn.benchmark = True
 
     dataloader = torch.utils.data.DataLoader(
         MyDataset(opt.imsize), batch_size=opt.batch_size, shuffle=True

@@ -1,4 +1,4 @@
-# %%writefile /content/CoordConv/gan-textbox/train_char_transfer_gan.py
+# %%writefile /content/CoordConv/gan-textbox/train_font_transfer.py
 import os
 import glob
 import argparse
@@ -89,7 +89,6 @@ parser.add_argument(
 opt = parser.parse_args()
 print(opt)
 
-
 class FontDataset(Dataset):
     def __init__(self):
         self.transform = transforms.Compose(
@@ -100,10 +99,12 @@ class FontDataset(Dataset):
                 transforms.Normalize((0.5,), (0.5,)),
             ]
         )
-        root = "/notebooks/CoordConv-pytorch/data/fontimg"
-        src_dir = "/notebooks/CoordConv-pytorch/data/fontimg/Roboto-Regular/"
-        #         root = "/content/CoordConv/data/fontimg"
-        #         src_dir = "/content/CoordConv/data/fontimg/Roboto-Regular/"
+        # root = "/notebooks/CoordConv-pytorch/data/fontimg"
+        # src_dir = "/notebooks/CoordConv-pytorch/data/fontimg/Roboto-Regular/"
+        # root = "/content/CoordConv/data/fontimg"
+        # src_dir = "/content/CoordConv/data/fontimg/Roboto-Regular"
+        root = "/tf/CoordConv/data/fontimg"
+        src_dir = "/tf/CoordConv/data/fontimg/Roboto-Regular"
 
         src_im = {}
         for f in sorted(glob.glob(src_dir + "/*.png")):
@@ -119,6 +120,7 @@ class FontDataset(Dataset):
                         samples.append((src_im[cls], f))
         self.samples = samples
 
+
     def __getitem__(self, index):
         src, dst = self.samples[index]
         
@@ -127,7 +129,7 @@ class FontDataset(Dataset):
         X11 = self.transform(im)
         
         im = Image.open(dst)
-        im = PIL.ImageOps.invert(im)
+        im = PIL.s.invert(im)
         X12 = self.transform(im)
 
         return {"X11": X11, "X12": X12}
@@ -165,7 +167,7 @@ if cuda:
     Enc1 = Enc1.cuda()
     Dec1 = Dec1.cuda()
     D1 = D1.cuda()
-    criterion_recon.cuda()
+    criterion_recon = criterion_recon.cuda()
 
 if opt.epoch != 0:
     # Load pretrained models
@@ -183,13 +185,6 @@ else:
     Enc1.apply(weights_init_normal)
     Dec1.apply(weights_init_normal)
     D1.apply(weights_init_normal)
-
-# Loss weights
-lambda_gan = 1
-lambda_id = 10
-lambda_style = 1
-lambda_cont = 1
-lambda_cyc = 0
 
 # Optimizers
 optimizer_G = torch.optim.Adam(
@@ -250,6 +245,13 @@ def sample_images(batches_done):
 #  Training
 # ----------
 
+# Loss weights
+lambda_gan = 1
+lambda_id = 5
+lambda_style = 1
+lambda_cont = 1
+lambda_cyc = 0
+
 # Adversarial ground truths
 valid = 1
 fake = 0
@@ -261,9 +263,9 @@ for epoch in range(opt.epoch, opt.n_epochs):
         X12 = batch["X12"] # same content, different style
         sz1 = torch.randn(X11.size(0), opt.style_dim, 1, 1)
         if cuda:
-            X11.cuda()
-            X12.cuda()
-            sz1.cuda()
+            X11 = X11.cuda()
+            X12 = X12.cuda()
+            sz1 = sz1.cuda()
 
         # -------------------------------
         #  Train Encoders and Generators
@@ -276,9 +278,9 @@ for epoch in range(opt.epoch, opt.n_epochs):
         c1_, s2 = Enc1(X12)
 
         # Reconstruct images
-        Y11 = Dec1(c1, s1)
+        # Y11 = Dec1(c1, s1)
         Y12 = Dec1(c1, s2)
-        Y1_1 = Dec1(c1_, s1)
+        # Y1_1 = Dec1(c1_, s1)
         Y1_2 = Dec1(c1_, s2)
 
         # Translate images
@@ -293,27 +295,29 @@ for epoch in range(opt.epoch, opt.n_epochs):
 
         # Losses
         loss_GAN_1 = lambda_gan * D1.compute_loss(Y12, valid)
-        loss_GAN_2 = lambda_gan * D1.compute_loss(Y1_1, valid)
+        # loss_GAN_2 = lambda_gan * D1.compute_loss(Y1_1, valid)
         loss_GAN_3 = lambda_gan * D1.compute_loss(Z11, valid)
-        loss_ID_1 = lambda_id * criterion_recon(Y11, X11)
-        loss_ID_2 = lambda_id * criterion_recon(Y1_1, X11)
+        # loss_ID_1 = lambda_id * criterion_recon(Y11, X11)
+        # loss_ID_2 = lambda_id * criterion_recon(Y1_1, X11)
         loss_ID_3 = lambda_id * criterion_recon(Y12, X12)
         loss_ID_4 = lambda_id * criterion_recon(Y1_2, X12)
         loss_s_1 = lambda_style * criterion_recon(sz1, sz1_.detach())
-        loss_c_1 = lambda_cont * criterion_recon(cz1, c1.detach())
+        loss_c_1 = lambda_cont * criterion_recon(c1, c1_.detach())
+        loss_c_2 = lambda_cont * criterion_recon(cz1, c1.detach())
         # loss_cyc_1 = lambda_cyc * criterion_recon(X121, X1) if lambda_cyc > 0 else 0
         # loss_cyc_2 = lambda_cyc * criterion_recon(X212, X2) if lambda_cyc > 0 else 0
 
         loss_G = (
             loss_GAN_1
-            + loss_GAN_2
+            # + loss_GAN_2
             + loss_GAN_3
-            + loss_ID_1
-            + loss_ID_2
+            # + loss_ID_1
+            # + loss_ID_2
             + loss_ID_3
             + loss_ID_4
             + loss_s_1
             + loss_c_1
+            + loss_c_2
         )
 
         loss_G.backward()
@@ -326,10 +330,11 @@ for epoch in range(opt.epoch, opt.n_epochs):
         optimizer_D1.zero_grad()
 
         loss_D1 = (
-            D1.compute_loss(X11, valid)
-            + D1.compute_loss(X12, valid)
+            # D1.compute_loss(X11, valid)
+            D1.compute_loss(X12, valid)
             + D1.compute_loss(Z11.detach(), fake)
-            + D1.compute_loss(Y1_1.detach(), fake)
+            + D1.compute_loss(Y12.detach(), fake)
+#             + D1.compute_loss(Y1_2.detach(), fake)
         )
 
         loss_D1.backward()
@@ -358,22 +363,9 @@ for epoch in range(opt.epoch, opt.n_epochs):
         )
 
         if batches_done % opt.sample_interval == 0:
-            # sample_images(batches_done)
-            # X1 = img1.unsqueeze(0).repeat(opt.style_dim, 1, 1, 1)
-            # X1 = Variable(X1.type(Tensor))
-            # Get random style codes
-            # s_code = np.random.uniform(-1, 1, (opt.style_dim, opt.style_dim))
-            # s_code = Variable(Tensor(s_code))
-            # Generate samples
-            # c_code_1, _ = Enc1(X1)
-            # X12 = Dec2(c_code_1, s_code)
-            # Concatenate samples horisontally
-            # X12 = torch.cat([x for x in X12.data.cpu()], -1)
-            X = torch.cat((X11, Y12.data), -1)
-            X = torch.cat((X, Y1_2.data), -1)
-            X = torch.cat((X, Z11.data), -1)
+            X = torch.cat((X11, Y12.data, Y1_2.data, Z11.data), -1)
             save_image(
-                X[:5], "images/%6d.png" % (batches_done,), nrow=5, normalize=True
+                X[:10], "images/%6d.png" % (batches_done,), nrow=1, normalize=True
             )
 
     # Update learning rates
