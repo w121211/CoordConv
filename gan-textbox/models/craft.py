@@ -129,7 +129,7 @@ class CRAFTGenerator(nn.Module):
         init_weights(self.upconv4.modules())
         init_weights(self.conv_classifier.modules())
 
-    def forward(self, img, z):
+    def forward(self, z, img):
         """
         Args:
             img: (N, C, H*2, W*2)

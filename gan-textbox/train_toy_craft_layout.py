@@ -81,12 +81,12 @@ class LayoutGenerator(nn.Module):
             mask: (N, C=1, H, W)
             heat: (N, C=3, H, W)
         """
-        mask = self.craft(img2x, z)  # mask: (N, 1, H, W)
+        mask = self.craft(z, img2x)  # mask: (N, 1, H, W)
         
         # convert mask to heatmap & apply to `img_small`
         heat = mask.repeat([1, 3,1,1])  # (N, 1, H, W) to (N, 3, H, W)
         heat = heat.permute(0, 2, 3, 1)  # (N, H, W, C)
-        heat = torch.mul(heat, torch.tensor([[1., -1., 1.]]))  # map color
+        heat = torch.mul(heat, torch.tensor([[1., -1., 1.]]).to(z.device))  # map color
         heat = heat.permute(0, 3, 1, 2)  # (N, C, H, W)
         mask = (mask > -0.95).float()  # convert to binary
         heat = (1. - mask) * img + mask * heat
@@ -101,12 +101,12 @@ class LayoutGenerator(nn.Module):
 
 class MyDataset(Dataset):
     def __init__(self, img_size):
-        self.post_folder = "/notebooks/CRAFT-pytorch/data"
-        self.mask_folder = "/notebooks/CRAFT-pytorch/result"
-        self.photo_folder = "/notebooks/CoordConv-pytorch/data/facebook"
-        # self.post_folder = "/tf/CRAFT-pytorch/data"
-        # self.mask_folder = "/tf/CRAFT-pytorch/result"
-        # self.photo_folder = "/tf/CoordConv/data/facebook"
+        # self.post_folder = "/notebooks/CRAFT-pytorch/data"
+        # self.mask_folder = "/notebooks/CRAFT-pytorch/result"
+        # self.photo_folder = "/notebooks/CoordConv-pytorch/data/facebook"
+        self.post_folder = "/tf/CRAFT-pytorch/data"
+        self.mask_folder = "/tf/CRAFT-pytorch/result"
+        self.photo_folder = "/tf/CoordConv/data/flickr"
 
         norm_mean = np.array([0.5, 0.5, 0.5])
         norm_sigma = np.array([0.5, 0.5, 0.5])
@@ -135,8 +135,8 @@ class MyDataset(Dataset):
         self.max_chars = 10
 
         self.img_size = img_size
-        self.posts = glob.glob(self.post_folder + "/*.jpg")
-        self.photos = glob.glob(self.photo_folder + "/*.jpg")
+        self.posts = self._sample(self.post_folder + "/*.jpg")
+        self.photos = self._sample(self.photo_folder + "/*.jpg")
 
     def __getitem__(self, index):
         f = self.posts[index]
@@ -155,11 +155,19 @@ class MyDataset(Dataset):
         photo = photo.convert("RGB")
         photo2x = self._resize(photo, self.img_size * 2)
         photo = self._resize(photo, self.img_size)
-
+        
         return self.trans_l(mask), heat, self.trans_rgb(photo), self.trans_rgb(photo2x)
-
+        
     def __len__(self):
         return len(self.posts)
+
+    def _sample(self, root):
+        samples = []
+        for f in glob.glob(root):
+            img = Image.open(f)
+            if img.mode == "RGB":
+                samples.append(f)
+        return samples
 
     def _heatmap(self, img, mask):
         """
@@ -277,14 +285,14 @@ class Trainer(object):
                 real_masks, real_heats, x_photos, x_photos2x = next(data_iter)
             except:
                 data_iter = iter(self.dataloader)
-                real_masks, real_heats, x_photos = next(data_iter)
+                real_masks, real_heats, x_photos, x_photos2x = next(data_iter)
             z = torch.randn((real_masks.size(0), self.opt.z_dim))
 
             if self.opt.cuda:
                 real_masks = real_masks.cuda()
                 real_heats = real_heats.cuda()
                 x_photos = x_photos.cuda()
-                in_photos = in_photos.cuda()
+                x_photos2x = x_photos2x.cuda()
                 z = z.cuda()
 
             d_mask_out_real, _, _ = self.D_mask(real_masks)
