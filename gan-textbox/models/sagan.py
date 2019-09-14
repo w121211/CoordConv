@@ -120,7 +120,9 @@ class Self_Attn(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, batch_size, image_size=64, z_dim=100, conv_dim=64, out_channels=3):
+    def __init__(
+        self, batch_size, image_size=64, z_dim=100, conv_dim=64, out_channels=3
+    ):
         super(Generator, self).__init__()
         self.imsize = image_size
         layer1 = []
@@ -185,6 +187,7 @@ class Generator(nn.Module):
 
         return out, p1, p2
 
+
 class Discriminator(nn.Module):
     def __init__(self, batch_size=64, image_size=64, conv_dim=64, in_channels=3):
         super(Discriminator, self).__init__()
@@ -198,7 +201,7 @@ class Discriminator(nn.Module):
             SpectralNorm(nn.Conv2d(in_channels, conv_dim, 4, 2, 1)),
             nn.LeakyReLU(0.1),
         ]
-        
+
         curr_dim = conv_dim
 
         layer2.append(SpectralNorm(nn.Conv2d(curr_dim, curr_dim * 2, 4, 2, 1)))
@@ -209,7 +212,7 @@ class Discriminator(nn.Module):
         layer3.append(nn.LeakyReLU(0.1))
         curr_dim = curr_dim * 2
 
-        if self.imsize == 64:
+        if self.imsize == 64 or self.imsize == 128:
             layer4 = []
             layer4.append(SpectralNorm(nn.Conv2d(curr_dim, curr_dim * 2, 4, 2, 1)))
             layer4.append(nn.LeakyReLU(0.1))
@@ -219,7 +222,10 @@ class Discriminator(nn.Module):
         self.l2 = nn.Sequential(*layer2)
         self.l3 = nn.Sequential(*layer3)
 
-        last.append(nn.Conv2d(curr_dim, 1, 4))
+        if self.imsize == 64:
+            last += [nn.Conv2d(curr_dim, 1, 4)]
+        elif self.imsize == 128:
+            last += [nn.Conv2d(curr_dim, 1, 4), nn.Conv2d(1, 1, 5)]
         self.last = nn.Sequential(*last)
 
         self.attn1 = Self_Attn(256, "relu")
@@ -234,6 +240,5 @@ class Discriminator(nn.Module):
         out, p2 = self.attn2(out)
         out = self.last(out)
 
-        return out.squeeze(), p1, p2  
-
+        return out.squeeze(), p1, p2
 

@@ -43,7 +43,9 @@ from utils import tensor2var, denorm
 class LayoutGenerator(nn.Module):
     def __init__(self, opt):
         super(LayoutGenerator, self).__init__()
-        self.craft = CRAFTGenerator(output_class=1, z_dim=opt.z_dim, img_size=opt.imsize)
+        self.craft = CRAFTGenerator(
+            output_class=1, z_dim=opt.z_dim, img_size=opt.imsize
+        )
 
         # def block(in_feat, out_feat, normalize=True):
         #     layers = [nn.Linear(in_feat, out_feat)]
@@ -82,14 +84,14 @@ class LayoutGenerator(nn.Module):
             heat: (N, C=3, H, W)
         """
         mask = self.craft(z, img2x)  # mask: (N, 1, H, W)
-        
+
         # convert mask to heatmap & apply to `img_small`
-        heat = mask.repeat([1, 3,1,1])  # (N, 1, H, W) to (N, 3, H, W)
-        heat = heat.permute(0, 2, 3, 1)  # (N, H, W, C)
-        heat = torch.mul(heat, torch.tensor([[1., -1., 1.]]).to(z.device))  # map color
-        heat = heat.permute(0, 3, 1, 2)  # (N, C, H, W)
-        mask = (mask > -0.95).float()  # convert to binary
-        heat = (1. - mask) * img + mask * heat
+        heat = mask.repeat([1, 3, 1, 1])  # (N, 1, H, W) to (N, 3, H, W)
+        heat = torch.mul(
+            heat, torch.tensor([1.0, -1.0, 1.0]).view(1, 3, 1, 1).to(z.device)
+        )  # map color
+        _mask = (mask > -0.95).float()  # convert to binary
+        heat = (1.0 - _mask) * img + _mask * heat
 
         return mask, heat
 
@@ -111,21 +113,17 @@ class MyDataset(Dataset):
         norm_mean = np.array([0.5, 0.5, 0.5])
         norm_sigma = np.array([0.5, 0.5, 0.5])
         self.trans_rgb = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize(norm_mean, norm_sigma),
-            ]
-        )    
+            [transforms.ToTensor(), transforms.Normalize(norm_mean, norm_sigma)]
+        )
         self.trans_l = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize((0.5,), (0.5,)),
-            ]
+            [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
         )
         self.trans_pil = transforms.Compose(
             [
-                transforms.Normalize(-(norm_mean/norm_sigma), 1 / norm_sigma),  # inverse-normalize
-                transforms.ToPILImage()
+                transforms.Normalize(
+                    -(norm_mean / norm_sigma), 1 / norm_sigma
+                ),  # inverse-normalize
+                transforms.ToPILImage(),
             ]
         )
 
@@ -155,9 +153,9 @@ class MyDataset(Dataset):
         photo = photo.convert("RGB")
         photo2x = self._resize(photo, self.img_size * 2)
         photo = self._resize(photo, self.img_size)
-        
+
         return self.trans_l(mask), heat, self.trans_rgb(photo), self.trans_rgb(photo2x)
-        
+
     def __len__(self):
         return len(self.posts)
 
@@ -180,15 +178,15 @@ class MyDataset(Dataset):
         img = self.trans_rgb(img)
         mask = self.trans_l(mask)
 
-        heat = mask.repeat([3,1,1])  # (1, H, W) to (3, H, W)
+        heat = mask.repeat([3, 1, 1])  # (1, H, W) to (3, H, W)
         heat = heat.permute(1, 2, 0)  # (H, W, C)
-        heat = torch.mul(heat, torch.tensor([[1., -1., 1.]]))  # map color
+        heat = torch.mul(heat, torch.tensor([[1.0, -1.0, 1.0]]))  # map color
         heat = heat.permute(2, 0, 1)  # (C, H, W)
         mask = (mask > -0.95).float()  # convert to binary
-        heat = (1. - mask) * img + mask * heat
-        
+        heat = (1.0 - mask) * img + mask * heat
+
         return heat
-    
+
     def _heatmap_pil(self, img, mask):
         """Deprecated"""
         heat = np.array(mask)
@@ -296,7 +294,7 @@ class Trainer(object):
                 z = z.cuda()
 
             d_mask_out_real, _, _ = self.D_mask(real_masks)
-            d_heat_out_real, _, _= self.D_heat(real_heats)
+            d_heat_out_real, _, _ = self.D_heat(real_heats)
             if self.opt.adv_loss == "wgan-gp":
                 d_mask_loss_real = -torch.mean(d_mask_out_real)
                 d_heat_loss_real = -torch.mean(d_heat_out_real)
@@ -320,7 +318,7 @@ class Trainer(object):
             # self.g_optimizer.zero_grad()
             self.d_mask_optimizer.zero_grad()
             self.d_heat_optimizer.zero_grad()
-            d_mask_loss.backward()
+            d_mask_loss.backward(retain_graph=True)
             d_heat_loss.backward()
             self.d_mask_optimizer.step()
             self.d_heat_optimizer.step()

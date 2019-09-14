@@ -24,6 +24,7 @@ def get_parameters():
     parser.add_argument("--clip_value", type=float, default=0.01)
 
     # Training setting
+    parser.add_argument("--n_epochs", type=int, default=1000)
     parser.add_argument(
         "--total_step",
         type=int,
@@ -45,6 +46,7 @@ def get_parameters():
         help="number of training steps for discriminator per iter",
     )
     parser.add_argument("--sample_interval", type=int, default=400)
+    parser.add_argument("--save_interval", type=int, default=400)
 
     # using pretrained
     parser.add_argument("--pretrained_model", type=int, default=None)
@@ -67,6 +69,5 @@ def get_parameters():
     # Step size
     parser.add_argument("--log_step", type=int, default=10)
     parser.add_argument("--sample_step", type=int, default=100)
-    parser.add_argument("--model_save_step", type=float, default=1.0)
 
     return parser.parse_args()

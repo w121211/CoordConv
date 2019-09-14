@@ -129,7 +129,7 @@ class FontDataset(Dataset):
         X11 = self.transform(im)
         
         im = Image.open(dst)
-        im = PIL.s.invert(im)
+        im = PIL.ImageOps.invert(im)
         X12 = self.transform(im)
 
         return {"X11": X11, "X12": X12}

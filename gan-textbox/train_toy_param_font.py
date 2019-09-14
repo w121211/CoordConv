@@ -7,6 +7,7 @@ import datetime
 from collections import OrderedDict
 
 import numpy as np
+import PIL
 from PIL import Image, ImageDraw, ImageFont
 
 import torch
@@ -21,13 +22,14 @@ from torchvision.utils import save_image
 # from models.craft import CRAFTGenerator
 # from models.wgan import Generator, Discriminator, compute_gradient_penalty
 from models.sagan import Generator, Discriminator
-from models.munit import Decoder
+from models.munit import Encoder, Decoder
 from config import get_parameters
 from utils import tensor2var, denorm
 
 # -------------------------------
 # Dataset:
 #   Real: token of ["A", "B", ..., "Z"] (ie only certain content code is valid) places at center
+#   Fake: any content code & style code generated
 # 
 # Toy experiment:
 #   1. (z, token_status = (token_width, token_height)) -> G -> Line_coord (x0, y0)
@@ -36,7 +38,7 @@ from utils import tensor2var, denorm
 # -------------------------------
 
 class ParamGenerator(nn.Module):
-    def __init__(self, opt, in_dim=10):
+    def __init__(self, opt):
         super(ParamGenerator, self).__init__()
 
         def block(in_feat, out_feat, normalize=True):
@@ -48,100 +50,81 @@ class ParamGenerator(nn.Module):
 
         self.model = nn.Sequential(
             # *block(in_dim, 128, normalize=False),
-            nn.Linear(in_dim, 64),
-            *block(64, 64, normalize=False),
-            *block(64, 64, normalize=False),
-            *block(64, 2, normalize=False),
-            nn.Linear(2, 2),
-            nn.Sigmoid(),
+            # nn.Linear(opt.z_dim, 64),
+            nn.Linear(256*32*32 + opt.z_dim, 512),  # c_code + z_dim -> 64
+            *block(512, 256, normalize=True),
+            *block(256, 128, normalize=True),
+            *block(128, 64, normalize=True),
+            *block(64, 32, normalize=True),
+            *block(32, 16, normalize=True),
+            *block(16, 8, normalize=True),
+            nn.Linear(8, 8),
+            nn.Linear(8, 8),
+            nn.Linear(8, 8),
+            # nn.Tanh(),
+            # nn.Sigmoid(),
         )
-        
-        decoder = Decoder(out_channels, dim=64, n_residual=3, n_upsample=2, style_dim=8)
-        decoder.load_state_dict(torch.load(opt.model_path, map_location="cpu"))
-        decoder.eval()
-        for param in decoder.parameters():
+        dec = Decoder(out_channels=1, dim=64, n_residual=3, n_upsample=2, style_dim=8)
+        dec.load_state_dict(torch.load("../data/model_font_transfer/Dec1_0.pth", map_location="cpu"))
+        dec.eval()
+        for param in dec.parameters():
             param.requires_grad = False  # freeze weight
-
-        # paste = Paste2dMask(opt.img_size)
-        # paste.eval()
-        # for param in paste.parameters():
-        #     param.requires_grad = False  # freeze weight
-        
-        if opt.cuda:
-            decoder.cuda()
-            # paste.cuda()
-        self.decoder = decoder
-        # self.paste = paste
-
-    def _token(self, tk, x0, y0):
-        transform = transforms.ToTensor()
-        font = ImageFont.truetype("./Roboto-Regular.ttf", 14)
-        im = Image.new("L", (opt.img_size, opt.img_size))
-        draw = ImageDraw.Draw(im)
-        draw.text((x0, y0), tk, font=font, fill=255)
-        return transform(im)
+        self.dec = dec
     
-    def forward(self, z, char_imgs):
-        content = self.model(z)
-        _, style = self.encoder(char_imgs)
-        x = self.decoder(content, style)
-        # img = self.paste(coord) * tk
+    def forward(self, z, content_code):
+        # print(content_code.shape)
+        x = torch.cat([z, torch.flatten(content_code, start_dim=1)], dim=1)
+        style_code = self.model(x).view(-1, 8, 1, 1)
+        # style_code = self.model(z).view(-1, 8, 1, 1)
+        x = self.dec(content_code, style_code)
         return x
 
-
-# ---------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------
 
 class MyDataset(Dataset):
     def __init__(self, img_size):
         self.img_size = img_size
+        self.root = "/tf/CoordConv/data/fontimg"
+        self.src_dir = "/tf/CoordConv/data/fontimg/Roboto-Regular"
+        # self.src_font = "/tf/CoordConv/data/fontimg/Roboto-Regular"
+        # self.src_font = "/notebooks/CoordConv-pytorch/data/fontimg/Roboto-Regular"
+
         self.transform = transforms.Compose(
             [
-                # transforms.Resize(opt.img_size),
+                transforms.Resize(self.img_size),
                 transforms.ToTensor(),
-                # transforms.Normalize((0.5,), (0.5,)),
-                # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
-        # self.post_folder = "/notebooks/CRAFT-pytorch/data"
-        # self.mask_folder = "/notebooks/CRAFT-pytorch/result"
-        # self.photo_folder = "/notebooks/CoordConv-pytorch/data/facebook"
-        # self.post_folder = "/tf/CRAFT-pytorch/data"
-        # self.mask_folder = "/tf/CRAFT-pytorch/result"
-        # self.photo_folder = "/tf/CoordConv/data/facebook"
 
-        self.font = "/notebooks/post-generator/asset/fonts_en/Roboto/Roboto-Regular.ttf"
-        self.font_size = 14
-        self.out_size = 14
-        self.max_chars = 10
-
-        # self.posts = glob.glob(self.post_folder + "/*.jpg")
-        # self.photos = glob.glob(self.photo_folder + "/*.jpg")
-        self.samples = self._sample()
+        self.srcs, self.samples = self._sample()
 
     def __getitem__(self, index):
-        im, text_status, text = self.samples[index]
-        return self.transform(im), torch.tensor(text_status).float(), text, torch.zeros((1,))
+        _, c, s = random.choice(self.srcs)
+        im = Image.open(self.samples[index])
+        im = PIL.ImageOps.invert(im)        
+        return self.transform(im), c, s
 
     def __len__(self):
         return len(self.samples)
-
+    
     def _sample(self):
+        enc = Encoder(in_channels=1, dim=64, n_downsample=2, n_residual=3, style_dim=8)
+        enc.load_state_dict(torch.load("../data/model_font_transfer/Enc1_0.pth", map_location="cpu"))
+        enc.eval()
+
+        srcs = []
+        for f in sorted(glob.glob(self.src_dir + "/*.png")):
+            im = Image.open(f)
+            im = PIL.ImageOps.invert(im)
+            x = self.transform(im)
+            c, s = enc(x.unsqueeze(0))
+            srcs.append((x, c.squeeze(0).detach(), s.squeeze(0).detach()))
+
         samples = []
-        font = ImageFont.truetype(self.font, self.font_size)
-        for ch in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
-            # tk = fake.word()
-            tk = ch
-            tk_w, tk_h = font.getsize(tk)
-            im = Image.new("L", (self.img_size, self.img_size))
-            draw = ImageDraw.Draw(im)
-            x0, y0 = (self.img_size - tk_w) / 2, (self.img_size - tk_h) / 2
-            draw.text((x0, y0), tk, font=font, fill=255)
-            samples.append(
-                (im, np.array([tk_w / self.img_size, tk_h / self.img_size]), tk)
-            )
-        return samples
+        for dst_folder in sorted(glob.glob(self.root + "/*/")):
+            for f in sorted(glob.glob(dst_folder + "/*.png")):
+                samples.append(f)
+
+        return srcs, samples
 
 
 # -------------------------------
@@ -154,10 +137,7 @@ class Trainer(object):
         self.opt = opt
         self.dataloader = dataloader
 
-        # self.G = Generator(
-        #     opt.batch_size, opt.imsize, opt.z_dim, opt.g_conv_dim, opt.im_channels
-        # )
-        self.g = ParamGenerator()
+        self.G = ParamGenerator(opt)
         self.D = Discriminator(
             opt.batch_size, opt.imsize, opt.d_conv_dim, opt.im_channels
         )
@@ -210,25 +190,28 @@ class Trainer(object):
             self.G.train()
 
             try:
-                real_images, _ = next(data_iter)
+                real_images, c_code, s_code = next(data_iter)
             except:
                 data_iter = iter(self.dataloader)
-                real_images, _ = next(data_iter)
+                real_images, c_code, s_code = next(data_iter)
             z = torch.randn((real_images.size(0), self.opt.z_dim))
+            # print(real_images.size(0))
 
             if self.opt.cuda:
                 real_images = real_images.cuda()
+                c_code = c_code.cuda()
+                s_code = s_code.cuda()
                 z = z.cuda()
 
-            d_out_real, dr1, dr2 = self.D(real_images)
+            d_out_real, _, _ = self.D(real_images)
             if self.opt.adv_loss == "wgan-gp":
                 d_loss_real = -torch.mean(d_out_real)
             elif self.opt.adv_loss == "hinge":
                 d_loss_real = torch.nn.ReLU()(1.0 - d_out_real).mean()
 
             # z = tensor2var(torch.randn(real_images.size(0), self.z_dim))
-            fake_images, gf1, gf2 = self.G(z)
-            d_out_fake, df1, df2 = self.D(fake_images)
+            fake_images = self.G(z, c_code)
+            d_out_fake, _, _ = self.D(fake_images)
 
             if self.opt.adv_loss == "wgan-gp":
                 d_loss_fake = d_out_fake.mean()
@@ -275,11 +258,18 @@ class Trainer(object):
 
             # ================== Train G and gumbel ================== #
 
-            # z = tensor2var(torch.randn(real_images.size(0), self.opt.z_dim))
+            try:
+                real_images, c_code, s_code = next(data_iter)
+            except:
+                data_iter = iter(self.dataloader)
+                real_images, c_code, s_code = next(data_iter)
             z = torch.randn((real_images.size(0), self.opt.z_dim))
             if self.opt.cuda:
+                real_images = real_images.cuda()
+                c_code = c_code.cuda()
+                s_code = s_code.cuda()
                 z = z.cuda()
-            fake_images, _, _ = self.G(z)
+            fake_images = self.G(z, c_code)
 
             g_out_fake, _, _ = self.D(fake_images)  # batch x n
             if self.opt.adv_loss == "wgan-gp":
@@ -296,22 +286,18 @@ class Trainer(object):
                 elapsed = time.time() - start_time
                 elapsed = str(datetime.timedelta(seconds=elapsed))
                 print(
-                    "Elapsed [{}], G_step [{}/{}], D_step[{}/{}], d_out_real: {:.4f}, "
-                    " ave_gamma_l3: {:.4f}, ave_gamma_l4: {:.4f}".format(
+                    "Elapsed [{}], G_step [{}/{}], D_step[{}/{}], d_loss_real: {:.4f} g_loss_fake: {:.4f},".format(
                         elapsed,
                         step + 1,
                         self.opt.total_step,
                         (step + 1),
                         self.opt.total_step,
                         d_loss_real.item(),
-                        self.G.attn1.gamma.mean().item(),
-                        self.G.attn2.gamma.mean().item(),
+                        g_loss_fake.item(),
                     )
                 )
 
             if (step + 1) % self.opt.sample_step == 0:
-                # fixed_z = tensor2var(torch.randn(self.opt.batch_size, self.opt.z_dim))
-                # fake_images, _, _ = self.G(fixed_z)
                 save_image(
                     # denorm(fake_images.data),
                     fake_images[:25],
