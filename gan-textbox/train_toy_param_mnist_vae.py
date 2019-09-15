@@ -1,4 +1,4 @@
-# %%writefile /content/CoordConv/experiments/gan/munit/train_toy_char_layout.py
+%%writefile /content/CoordConv/gan-textbox/train_toy_param_mnist_vae.py
 import os
 import glob
 import random
@@ -37,6 +37,18 @@ from utils import tensor2var, denorm
 #   3. Image -> D -> y
 # -------------------------------
 
+class VAEDecoder(nn.Module):
+    def __init__(self):
+        super(VAEDecoder, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(20, 400),
+            nn.ReLU(inplace=True),
+            nn.Linear(400, 784),
+            nn.Sigmoid()
+            )
+
+    def forward(self, z):
+        return self.model(z)
 
 class VAE(nn.Module):
     def __init__(self):
@@ -47,6 +59,8 @@ class VAE(nn.Module):
         self.fc22 = nn.Linear(400, 20)
         self.fc3 = nn.Linear(20, 400)
         self.fc4 = nn.Linear(400, 784)
+
+        self.dec = VAEDecoder()
 
     def encode(self, x):
         h1 = F.relu(self.fc1(x))
@@ -64,7 +78,7 @@ class VAE(nn.Module):
     def forward(self, x):
         mu, logvar = self.encode(x.view(-1, 784))
         z = self.reparameterize(mu, logvar)
-        return self.decode(z), mu, logvar
+        return self.dec(z), mu, logvar
 
 
 def vae_loss(recon_x, x, mu, logvar):
@@ -74,50 +88,33 @@ def vae_loss(recon_x, x, mu, logvar):
     return BCE + KLD
 
 
-class Decoder(nn.Module):
-    def __init__(self, opt):
-        super(Decoder, self).__init__()
-
-        def block(in_feat, out_feat, normalize=True):
-            layers = [nn.Linear(in_feat, out_feat)]
-            if normalize:
-                layers.append(nn.BatchNorm1d(out_feat, 0.8))
-            layers.append(nn.LeakyReLU(0.2, inplace=True))
-            return layers
-
-        self.model = nn.Sequential(
-            *block(opt.z_dim, 128, normalize=False),
-            *block(128, 256),
-            *block(256, 512),
-            *block(512, 1024),
-            # nn.Linear(1024, int(np.prod(opt.img_shape))),
-            # nn.Tanh()
-        )
-
-    def forward(self, z):
-        return self.model(z)
-
-
 class Generator(nn.Module):
     def __init__(self, opt):
         super(Generator, self).__init__()
         self.opt = opt
 
-        dec = Decoder(opt)
+        dec = VAEDecoder()
         dec.load_state_dict(
-            torch.load("./out/models_pretrain/006985_G_dec.pth", map_location="cpu")
+            torch.load("./out/models_pretrain/000070_vae_dec.pth", map_location="cpu")
         )
         for param in dec.parameters():
             param.requires_grad = False  # freeze weight
         self.dec = dec
 
         self.model = nn.Sequential(
-            nn.Linear(1024, int(np.prod(opt.img_shape))), nn.Tanh()
+            nn.Linear(opt.z_dim, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 20),
+            nn.Linear(20, 20),
         )
 
     def forward(self, z):
-        x = self.dec(z)
-        img = self.model(x)
+        x = self.model(z)
+        img = self.dec(x)
         img = img.view(img.shape[0], *self.opt.img_shape)
         return img
 
@@ -142,16 +139,14 @@ class Discriminator(nn.Module):
 def compute_gradient_penalty(D, real_samples, fake_samples, opt):
     """Calculates the gradient penalty loss for WGAN GP"""
     # Random weight term for interpolation between real and fake samples
-    alpha = torch.tensor(np.random.random((real_samples.size(0), 1, 1, 1))).float()
-    if opt.cuda:
-        alpha = alpha.cuda()
+    alpha = torch.tensor(np.random.random((real_samples.size(0), 1, 1, 1))).float().to(opt.device)
 
     # Get random interpolation between real and fake samples
     interpolates = (alpha * real_samples + ((1 - alpha) * fake_samples)).requires_grad_(
         True
     )
     d_interpolates = D(interpolates)
-    fake = torch.ones((real_samples.shape[0], 1)).requires_grad_(False)
+    fake = torch.ones((real_samples.shape[0], 1)).requires_grad_(False).to(opt.device)
     # Get gradient w.r.t. interpolates
     gradients = torch.autograd.grad(
         outputs=d_interpolates,
@@ -167,7 +162,7 @@ def compute_gradient_penalty(D, real_samples, fake_samples, opt):
 
 
 # -------------------------------
-# Training GAN
+# Training
 # -------------------------------
 
 
@@ -201,36 +196,21 @@ class VAETrainer(object):
                     )
                 )
                 save_image(
-                    recon_batch[:25],
+                    recon_batch.view(real_img.shape[0], *self.opt.img_shape)[:25],
                     os.path.join(
                         self.opt.sample_path, "{:06d}_vae.png".format(epoch)
                     ),
                     nrow=5,
                     normalize=True,
                 )
-
-                # if i % opt.save_interval == 0:
-                #     torch.save(
-                #         self.G.state_dict(),
-                #         os.path.join(
-                #             self.opt.model_save_path,
-                #             "{:06d}_G.pth".format(batches_done),
-                #         ),
-                #     )
-                #     torch.save(
-                #         self.D.state_dict(),
-                #         os.path.join(
-                #             self.opt.model_save_path,
-                #             "{:06d}_D.pth".format(batches_done),
-                #         ),
-                #     )
-                #     torch.save(
-                #         self.G.dec.state_dict(),
-                #         os.path.join(
-                #             self.opt.model_save_path,
-                #             "{:06d}_G_dec.pth".format(batches_done),
-                #         ),
-                #     )
+                torch.save(
+                        self.model.dec.state_dict(),
+                        os.path.join(
+                            self.opt.model_save_path,
+                            "{:06d}_vae_dec.pth".format(epoch),
+                        ),
+                    )
+                
 
 
 class GANTrainer(object):
@@ -249,8 +229,6 @@ class GANTrainer(object):
             self.G = nn.DataParallel(self.G)
             self.D = nn.DataParallel(self.D)
 
-        # for p in self.G.parameters():
-        #     print(p)
         self.g_optimizer = torch.optim.Adam(
             filter(lambda p: p.requires_grad, self.G.parameters()),
             opt.g_lr,
@@ -261,11 +239,6 @@ class GANTrainer(object):
             opt.d_lr,
             [opt.beta1, opt.beta2],
         )
-
-        if opt.use_tensorboard:
-            from logger import Logger
-
-            self.logger = Logger(opt.log_path)
 
         # if opt.pretrained_model is not None:
         #     self.load_pretrained_model()
@@ -314,8 +287,8 @@ class GANTrainer(object):
                     g_loss.backward()
                     self.g_optimizer.step()
 
-                    print(
-                        "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
+                    if batches_done % opt.sample_interval == 0:
+                        print("[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
                         % (
                             epoch,
                             opt.n_epochs,
@@ -325,8 +298,6 @@ class GANTrainer(object):
                             g_loss.item(),
                         )
                     )
-
-                    if batches_done % opt.sample_interval == 0:
                         save_image(
                             fake_img.data[:25],
                             os.path.join(
@@ -334,8 +305,17 @@ class GANTrainer(object):
                                 "{:06d}_fake.png".format(batches_done),
                             ),
                             nrow=5,
-                            normalize=True,
+                            # normalize=True,
                         )
+                        # save_image(
+                        #     real_img.data[:25],
+                        #     os.path.join(
+                        #         self.opt.sample_path,
+                        #         "{:06d}_real.png".format(batches_done),
+                        #     ),
+                        #     nrow=5,
+                        #     # normalize=True,
+                        # )
 
                     batches_done += opt.n_critic
 
@@ -372,8 +352,14 @@ if __name__ == "__main__":
     if opt.cuda:
         torch.backends.cudnn.benchmark = True
 
-    dataloader = torch.utils.data.DataLoader(
-        datasets.MNIST(
+    def get_indices(dataset,class_name):
+        indices =  []
+        for i in range(len(dataset.targets)):
+            if dataset.targets[i] == class_name:
+                indices.append(i)
+        return indices
+
+    dataset = datasets.MNIST(
             "../../data/mnist",
             train=True,
             download=True,
@@ -381,12 +367,15 @@ if __name__ == "__main__":
                 [
                     transforms.Resize(opt.imsize),
                     transforms.ToTensor(),
-                    transforms.Normalize([0.5], [0.5]),
+                    # transforms.Normalize([0.5], [0.5]),
                 ]
             ),
-        ),
+        )
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
         batch_size=opt.batch_size,
-        shuffle=True,
+        # shuffle=True,
+        sampler = torch.utils.data.sampler.SubsetRandomSampler(get_indices(dataset, 1))
     )
 
     os.makedirs(opt.model_save_path, exist_ok=True)
@@ -395,7 +384,8 @@ if __name__ == "__main__":
     os.makedirs(opt.attn_path, exist_ok=True)
 
     if opt.train:
-        trainer = VAETrainer(dataloader, opt)
+        # trainer = VAETrainer(dataloader, opt)
+        trainer = GANTrainer(dataloader, opt)
         trainer.train()
     # else:
     #     tester = Tester(data_loader.loader(), config)
