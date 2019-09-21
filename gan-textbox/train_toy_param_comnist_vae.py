@@ -1,4 +1,4 @@
-# %%writefile /content/CoordConv/gan-textbox/train_toy_param_mnist_vae.py
+# %%writefile /content/CoordConv/gan-textbox/train_toy_param_comnist_vae.py
 import os
 import glob
 import random
@@ -78,33 +78,51 @@ class VAEEncoder(nn.Module):
 
 
 class VAEDecoder(nn.Module):
-    def __init__(self, z_dim=20):
+    def __init__(self, opt):
         super(VAEDecoder, self).__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(z_dim, 256),
-            nn.ReLU(inplace=True),
-            nn.Linear(256, 4096),
-            nn.ReLU(inplace=True),
-        )
+        # self.fc = nn.Sequential(
+        #     nn.Linear(opt.z_dim, 256),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(256, 4096),
+        #     nn.ReLU(inplace=True),
+        # )
+        # self.conv = nn.Sequential(
+        #     nn.Conv2d(16, 16, kernel_size=3, padding=1),
+        #     nn.BatchNorm2d(16),
+        #     nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
+        #     nn.Conv2d(16, 1, kernel_size=3, padding=1),
+        #     nn.Sigmoid(),
+        # )
+        self.init_size = opt.imsize // 4
+        self.l1 = nn.Sequential(nn.Linear(opt.z_dim, 128 * self.init_size ** 2))
+
         self.conv = nn.Sequential(
-            nn.Conv2d(16, 16, kernel_size=3, padding=1),
-            nn.BatchNorm2d(16),
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
-            nn.Conv2d(16, 1, kernel_size=3, padding=1),
-            nn.Sigmoid(),
+            nn.BatchNorm2d(128),
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(128, 128, 3, stride=1, padding=1),
+            nn.BatchNorm2d(128, 0.8),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(128, 64, 3, stride=1, padding=1),
+            nn.BatchNorm2d(64, 0.8),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(64, opt.im_channels, 3, stride=1, padding=1),
+            nn.Tanh(),
         )
 
     def forward(self, z):
-        x = self.fc(z).view(z.size(0), 16, 16, 16)
+        N = z.shape[0]
+        x = self.l1(z).view(N, 128, self.init_size, self.init_size)
         x = self.conv(x)
         return x
 
 
+
 class VAE(nn.Module):
-    def __init__(self, z_dim=20):
+    def __init__(self, opt):
         super(VAE, self).__init__()
         self.enc = VAEEncoder()
-        self.dec = VAEDecoder()
+        self.dec = VAEDecoder(opt)
 
     def forward(self, x):
         z, mu, logvar = self.enc(x)
@@ -122,79 +140,62 @@ class Generator(nn.Module):
         super(Generator, self).__init__()
         self.opt = opt
 
-        dec = VAEDecoder()
-        dec.load_state_dict(
-            torch.load("./out/models/000120_vae_dec.pth", map_location="cpu")
-        )
-        for param in dec.parameters():
-            param.requires_grad = False  # freeze weight
-        self.dec = dec
+        # dec = VAEDecoder(opt)
+        # dec.load_state_dict(
+        #     torch.load("./out/models/000040_vae_dec.pth", map_location="cpu")
+        # )
+        # for param in dec.parameters():
+        #     param.requires_grad = False  # freeze weight
+        # self.dec = dec
 
         self.model = nn.Sequential(
-            nn.Linear(opt.z_dim, 32),
-            nn.ReLU(inplace=True),
-            nn.Linear(32, 32),
-            nn.ReLU(inplace=True),
-            nn.Linear(32, 32),
-            nn.ReLU(inplace=True),
-            nn.Linear(32, 20),
-            nn.Linear(20, 20),
+            nn.Linear(opt.z_dim, 64),
+            # nn.LeakyReLU(inplace=True),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(64, 128),
+            # nn.ReLU(inplace=True),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(128, 128),
+            # nn.ReLU(inplace=True),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(128, opt.z_dim),
+            nn.Linear(opt.z_dim, opt.z_dim),
         )
 
     def forward(self, z):
         style = self.model(z)
-        img = self.dec(style)
-        img = img.view(img.shape[0], *self.opt.img_shape)
-        return img, style
+        # img = self.dec(style)
+        # img = img.view(img.shape[0], *self.opt.img_shape)
+        # return img, style
+        return style
 
 
 class Discriminator(nn.Module):
     def __init__(self, opt):
         super(Discriminator, self).__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(int(np.prod(opt.img_shape)), 512),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(512, 256),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(256, 1),
+
+        def discriminator_block(in_filters, out_filters, bn=True):
+            block = [nn.Conv2d(in_filters, out_filters, 3, 2, 1), nn.LeakyReLU(0.2, inplace=True), nn.Dropout2d(0.25)]
+            if bn:
+                block.append(nn.BatchNorm2d(out_filters, 0.8))
+            return block
+
+        self.model = nn.Sequential(
+            *discriminator_block(opt.im_channels, 16, bn=False),
+            *discriminator_block(16, 32),
+            *discriminator_block(32, 64),
+            *discriminator_block(64, 128),
         )
 
-        self.conv = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, padding=1, stride=2),  # 32,16,16
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            # nn.Conv2d(16, 32, kernel_size=3, padding=1, stride=2),  # 32,16,16
-            # nn.BatchNorm2d(32),
-            # nn.ReLU(inplace=True),
-
-            # nn.Conv2d(32, 64, kernel_size=3, padding=1, stride=2),  # 32,16,16 -> 64,8,8
-            # nn.BatchNorm2d(64),
-            # nn.ReLU(inplace=True),
-
-            # nn.Conv2d(
-            #     64, 128, kernel_size=3, padding=1, stride=2
-            # ),  # 32,16,16 -> 64,8,8
-            # nn.BatchNorm2d(128),
-            # nn.ReLU(inplace=True),
-
-            # nn.Conv2d(64, 128, kernel_size=3, padding=1, stride=2),  # 64,8,8 -> 128,4,4
-            # nn.BatchNorm2d(128),
-            # nn.ReLU(inplace=True),
-
-            # nn.Conv2d(128, 256, kernel_size=3, padding=1, stride=2),  # 256,2,2
-            # nn.BatchNorm2d(256),
-            # nn.ReLU(inplace=True),
-            nn.AvgPool2d(kernel_size=16),  # 256,1,1
-            #             nn.Conv2d(256, 64, kernel_size=1),  # 256,1,1
-            #             nn.Conv2d(64, 16, kernel_size=1),  # 64,1,1
-            #             nn.Conv2d(16, 1, kernel_size=1),  # 16,1,1
-        )
+        # The height and width of downsampled image
+        ds_size = opt.imsize // 2 ** 4
+        self.adv_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, 1), nn.Sigmoid())
 
     def forward(self, img):
-        img_flat = img.view(img.shape[0], -1)
-        validity = self.model(img_flat)
-        #         validity = self.model(img).view(img.shape[0], -1)
-        # validity = self.model(img).mean(dim=1).view(img.shape[0], -1)
+        out = self.model(img)
+        out = out.view(out.shape[0], -1)
+        validity = self.adv_layer(out)
+
         return validity
 
 
@@ -382,33 +383,33 @@ class GANTrainer(object):
                 self.d_optimizer.step()
 
                 #  Train Style-Discriminator
-                real_style, _, _ = self.Enc(real_img)
+                # real_style, _, _ = self.Enc(real_img)
 
-                real_validity = self.D_style(real_style.detach())
-                fake_validity = self.D_style(fake_style.detach())
+                # real_validity = self.D_style(real_style.detach())
+                # fake_validity = self.D_style(fake_style.detach())
 
-                gp = compute_gradient_penalty(
-                    self.D_style,
-                    real_style.detach(),
-                    fake_style.detach(),
-                    self.opt,
-                )
+                # gp = compute_gradient_penalty(
+                #     self.D_style,
+                #     real_style.detach(),
+                #     fake_style.detach(),
+                #     self.opt,
+                # )
 
-                d_style_loss = (
-                    -torch.mean(real_validity)
-                    + torch.mean(fake_validity)
-                    + lambda_gp * gp
-                )
+                # d_style_loss = (
+                #     -torch.mean(real_validity)
+                #     + torch.mean(fake_validity)
+                #     + lambda_gp * gp
+                # )
 
-                self.d_style_optimizer.zero_grad()
-                d_style_loss.backward()
-                self.d_style_optimizer.step()
+                # self.d_style_optimizer.zero_grad()
+                # d_style_loss.backward()
+                # self.d_style_optimizer.step()
 
                 # Train G every n_critic steps
                 if i % opt.n_critic == 0:
                     fake_img, fake_style = self.G(z)
                     fake_validity = self.D(fake_img)
-                    fake_validity_style = self.D_style(fake_style)
+                    # fake_validity_style = self.D_style(fake_style)
                     # g_loss = -(
                     #     torch.mean(fake_validity) + torch.mean(fake_validity_style)
                     # )
@@ -427,7 +428,8 @@ class GANTrainer(object):
                                 i,
                                 len(dataloader),
                                 d_loss.item(),
-                                d_style_loss.item(),
+                                # d_style_loss.item(),
+                                0,
                                 g_loss.item(),
                             )
                         )
@@ -467,6 +469,194 @@ class GANTrainer(object):
                 #     )
 
 
+class DualGANTrainer(object):
+    def __init__(self, dataloader1, dataloader2, opt):
+        self.opt = opt
+        self.dataloader1 = dataloader1
+        self.dataloader2 = dataloader2
+
+        self.G1 = VAEDecoder(opt).to(opt.device)
+        self.D1 = Discriminator(opt).to(opt.device)
+        self.G2 = Generator(opt).to(opt.device)
+        self.D2 = Discriminator(opt).to(opt.device)
+
+        self.g1_optimizer = torch.optim.Adam(
+            filter(lambda p: p.requires_grad, self.G1.parameters()),
+            opt.g_lr,
+            [opt.beta1, opt.beta2],
+        )
+        self.d1_optimizer = torch.optim.Adam(
+            filter(lambda p: p.requires_grad, self.D1.parameters()),
+            opt.d_lr,
+            [opt.beta1, opt.beta2],
+        )
+        self.g2_optimizer = torch.optim.Adam(
+            filter(lambda p: p.requires_grad, self.G2.parameters()),
+            opt.g_lr,
+            [opt.beta1, opt.beta2],
+        )
+        self.d2_optimizer = torch.optim.Adam(
+            filter(lambda p: p.requires_grad, self.D2.parameters()),
+            opt.d_lr,
+            [opt.beta1, opt.beta2],
+        )
+
+    def train(self):
+        lambda_gp = 10
+        batches_done = 0
+        # style_loss_decay = 0.95
+
+        data2 = iter(self.dataloader2)
+        
+        for epoch in range(opt.n_epochs):
+            for i, (real_img, _) in enumerate(self.dataloader1):
+                try:
+                    real_img2, _ = next(data2)
+                except:
+                    data2 = iter(self.dataloader2)
+                    real_img2, _ = next(data2)
+
+                real_img = real_img.to(opt.device)
+                real_img2 = real_img2.to(opt.device)
+                z1 = (
+                    torch.tensor(np.random.normal(0, 1, (real_img.shape[0], opt.z_dim)))
+                    .float()
+                    .to(opt.device)
+                )
+                z2 = (
+                    torch.tensor(np.random.normal(0, 1, (real_img2.shape[0], opt.z_dim)))
+                    .float()
+                    .to(opt.device)
+                )
+
+                #  Train D1
+                fake_img = self.G1(z1)
+                real_validity = self.D1(real_img)
+                fake_validity = self.D1(fake_img)
+
+                gp = compute_gradient_penalty(
+                    self.D1, real_img.detach(), fake_img.detach(), self.opt
+                )
+                d1_loss = (
+                    -torch.mean(real_validity)
+                    + torch.mean(fake_validity)
+                    + lambda_gp * gp
+                )
+
+                self.d1_optimizer.zero_grad()
+                d1_loss.backward()
+                self.d1_optimizer.step()
+
+                #  Train D2
+                param = self.G2(z2)
+                fake_img = self.G1(param)
+                real_validity = self.D2(real_img2)
+                fake_validity = self.D2(fake_img)
+
+                gp = compute_gradient_penalty(
+                    self.D2, real_img2.detach(), fake_img.detach(), self.opt
+                )
+                d2_loss = (
+                    -torch.mean(real_validity)
+                    + torch.mean(fake_validity)
+                    + lambda_gp * gp
+                )
+
+                self.d2_optimizer.zero_grad()
+                d2_loss.backward()
+                self.d2_optimizer.step()
+
+                if i % opt.n_critic == 0:
+                    # Train G1
+                    fake_img1 = self.G1(z1)
+                    fake_validity = self.D1(fake_img1)
+                    # fake_validity_style = self.D_style(fake_style)
+                    # g_loss = -(
+                    #     torch.mean(fake_validity) + torch.mean(fake_validity_style)
+                    # )
+                    g1_loss = -torch.mean(fake_validity)
+
+                    self.g1_optimizer.zero_grad()
+                    g1_loss.backward()
+                    self.g1_optimizer.step()
+
+                    # Train G2
+                    param = self.G2(z2)
+                    fake_img2 = self.G1(param)
+                    fake_validity = self.D2(fake_img2)
+                    g2_loss = -torch.mean(fake_validity)
+
+                    self.g2_optimizer.zero_grad()
+                    g2_loss.backward()
+                    self.g2_optimizer.step()
+                    
+                    if batches_done % opt.sample_interval == 0:
+                        print(
+                            "[Epoch %d/%d] [Batch %d/%d] [D1 loss: %f] [G1 loss: %f] [D2 loss: %f] [G2 loss: %f]"
+                            % (
+                                epoch,
+                                opt.n_epochs,
+                                i,
+                                len(self.dataloader1),
+                                d1_loss.item(),
+                                g1_loss.item(),
+                                d2_loss.item(),
+                                g2_loss.item(),
+                            )
+                        )
+                        save_image(
+                            fake_img1.data[:25],
+                            os.path.join(
+                                self.opt.sample_path,
+                                "{:06d}_fake1.png".format(batches_done),
+                            ),
+                            nrow=5,
+                            # normalize=True,
+                        )
+                        save_image(
+                            fake_img2.data[:25],
+                            os.path.join(
+                                self.opt.sample_path,
+                                "{:06d}_fake2.png".format(batches_done),
+                            ),
+                            nrow=5,
+                            # normalize=True,
+                        )
+                        # save_image(
+                        #     real_img2.data[:25],
+                        #     os.path.join(
+                        #         self.opt.sample_path,
+                        #         "{:06d}_real2.png".format(batches_done),
+                        #     ),
+                        #     nrow=5,
+                        #     # normalize=True,
+                        # )
+
+                    batches_done += opt.n_critic
+
+                # if i % opt.save_interval == 0:
+                #     torch.save(
+                #         self.G.state_dict(),
+                #         os.path.join(
+                #             self.opt.model_save_path,
+                #             "{:06d}_G.pth".format(batches_done),
+                #         ),
+                #     )
+                #     torch.save(
+                #         self.D.state_dict(),
+                #         os.path.join(
+                #             self.opt.model_save_path,
+                #             "{:06d}_D.pth".format(batches_done),
+                #         ),
+                #     )
+                #     torch.save(
+                #         self.G.dec.state_dict(),
+                #         os.path.join(
+                #             self.opt.model_save_path,
+                #             "{:06d}_G_dec.pth".format(batches_done),
+                #         ),
+                #     )
+
 if __name__ == "__main__":
     opt = get_parameters()
     opt.cuda = torch.cuda.is_available()
@@ -502,6 +692,13 @@ if __name__ == "__main__":
     #     shuffle=True,
     # )
 
+    def get_indices(dataset,class_name):
+        indices =  []
+        for i in range(len(dataset.targets)):
+            if dataset.targets[i] == class_name:
+                indices.append(i)
+        return indices
+
     dataset = datasets.MNIST(
             "../data/mnist",
             train=True,
@@ -510,18 +707,26 @@ if __name__ == "__main__":
                 [
                     transforms.Resize(opt.imsize),
                     transforms.ToTensor(),
-                    # transforms.Normalize([0.5], [0.5]),
+                    transforms.Normalize([0.5], [0.5]),
                 ]
             ),
         )
-    dataloader = torch.utils.data.DataLoader(
+    dataloader1 = torch.utils.data.DataLoader(
         dataset,
         batch_size=opt.batch_size,
         shuffle=True,
         # sampler = torch.utils.data.sampler.SubsetRandomSampler(get_indices(dataset, 1))
     )
 
+    dataloader2 = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=opt.batch_size,
+        # shuffle=True,
+        sampler = torch.utils.data.sampler.SubsetRandomSampler(get_indices(dataset, 1))
+    )
+
     if opt.train:
-        trainer = VAETrainer(dataloader, opt)
+        # trainer = VAETrainer(dataloader, opt)
         # trainer = GANTrainer(dataloader, opt)
+        trainer = DualGANTrainer(dataloader1, dataloader2, opt)
         trainer.train()
