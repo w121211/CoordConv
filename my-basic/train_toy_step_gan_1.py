@@ -23,6 +23,7 @@ from torchvision import datasets
 # from models.craft import CRAFTGenerator
 # from models.wgan import Generator, Discriminator, compute_gradient_penalty
 from models.dcgan import DCDiscriminator
+from models.layers import GaussianSmoothing
 from config import get_parameters
 from utils import tensor2var, denorm
 
@@ -56,13 +57,18 @@ class MyDataset(Dataset):
             ]
         )
         self.trans_mask = transforms.Compose(
-            [transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
+            [transforms.ToTensor(), 
+            # transforms.Normalize([0.5], [0.5])
+            ]
         )
         self.post = "../data/pin"
         # self.photo = "../data/facebook"
         self.photo = "../data/flickr"
         self.photos = sorted(glob.glob(self.photo + "/*.jpg"))[:1000]
         self.posts = sorted(glob.glob(self.post + "/*.jpg"))
+
+        self.blur = GaussianSmoothing(3, 5, 5)
+        self.blur.eval()
 
     def __getitem__(self, index):
         """
@@ -72,7 +78,10 @@ class MyDataset(Dataset):
             mask: (N, 1, H, W)
         """
         real_img = Image.open(random.choice(self.posts))
-        real_img = real_img.convert('RGB')
+        real_img = real_img.convert("RGB")
+        real_img = self.trans_real(real_img)
+        real_img = self.blur(real_img.unsqueeze(0))
+        real_img = real_img.squeeze(0)
 
         im = Image.new("RGB", (self.imsize, self.imsize))
         p = Image.open(self.photos[index])
@@ -86,11 +95,16 @@ class MyDataset(Dataset):
 
         mask = Image.new("L", (self.imsize, self.imsize))
         draw = ImageDraw.Draw(mask)
-        draw.rectangle((x, y, x + p.width, y + p.height), fill=255)
+        draw.rectangle((x, y, x + p.width - 1, y + p.height - 1), fill=255)
         mask = PIL.ImageOps.invert(mask)
 
         try:
-            return self.trans_real(real_img), self.trans_input(im), self.trans_mask(mask)
+            return (
+                # self.trans_real(real_img),
+                real_img,
+                self.trans_input(im),
+                self.trans_mask(mask),
+            )
         except:
             print(real_img.mode)
             raise Exception()
@@ -194,13 +208,16 @@ class Generator(nn.Module):
             nn.Linear(opt.z_dim, 3),  # to RGB
             nn.Tanh(),
         )
+        self.blur = GaussianSmoothing(3, 5, 5)
 
     def forward(self, features, x_img, mask):
         N = features.shape[0]
         rgb = self.model(features).view(N, 3, 1, 1)
+        # rgb = torch.tensor([[1, 1, 1]]).float().expand(N,3).view(N, 3, 1, 1).to(self.device)
         bg = rgb * torch.ones(N, 1, self.imsize, self.imsize).to(self.device)
         mask = mask.expand(-1, 3, -1, -1)
         im = mask * bg + (1.0 - mask) * x_img
+        im = self.blur(im)
         return im
 
 
@@ -313,53 +330,31 @@ class GANTrainer(object):
                 real_validity = self.D(real_img)
                 fake_validity = self.D(fake_img)
 
-                gp = compute_gradient_penalty(
-                    self.D, real_img.detach(), fake_img.detach(), self.opt
-                )
-
-                d_loss = (
-                    -torch.mean(real_validity)
-                    + torch.mean(fake_validity)
-                    + lambda_gp * gp
-                )
+                if self.opt.adv_loss == "wgan-gp":
+                    gp = compute_gradient_penalty(
+                        self.D, real_img.detach(), fake_img.detach(), self.opt
+                    )
+                    d_loss = (
+                        -torch.mean(real_validity)
+                        + torch.mean(fake_validity)
+                        + lambda_gp * gp
+                    )
+                elif self.opt.adv_loss == "hinge":
+                    d_loss = (
+                        torch.nn.ReLU()(1.0 - real_validity).mean()
+                        + torch.nn.ReLU()(1.0 + fake_validity).mean()
+                    )
 
                 self.d_optimizer.zero_grad()
                 d_loss.backward()
                 self.d_optimizer.step()
 
-                #  Train Style-Discriminator
-                # real_style, _, _ = self.Enc(real_img)
-
-                # real_validity = self.D_style(real_style.detach())
-                # fake_validity = self.D_style(fake_style.detach())
-
-                # gp = compute_gradient_penalty(
-                #     self.D_style,
-                #     real_style.detach(),
-                #     fake_style.detach(),
-                #     self.opt,
-                # )
-
-                # d_style_loss = (
-                #     -torch.mean(real_validity)
-                #     + torch.mean(fake_validity)
-                #     + lambda_gp * gp
-                # )
-
-                # self.d_style_optimizer.zero_grad()
-                # d_style_loss.backward()
-                # self.d_style_optimizer.step()
-
                 # Train G every n_critic steps
                 if i % opt.n_critic == 0:
-                    # fake_img, fake_style = self.G(z)
                     features = self.Enc(x_img, mask)
                     fake_img = self.G(features, x_img, mask)
                     fake_validity = self.D(fake_img)
-                    # fake_validity_style = self.D_style(fake_style)
-                    # g_loss = -(
-                    #     torch.mean(fake_validity) + torch.mean(fake_validity_style)
-                    # )
+                    
                     g_loss = -torch.mean(fake_validity)
 
                     self.g_optimizer.zero_grad()

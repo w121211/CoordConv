@@ -1,8 +1,9 @@
 {
-    "python.pythonPath": "/miniconda/envs/py36/bin/python",
+    "python.pythonPath": "/opt/conda/bin/python",
     "python.formatting.provider": "black",
     // workaround for vscode remote docker: switch back from sh to bash
     "terminal.integrated.shell.linux": "/bin/bash",
     "git.ignoreLimitWarning": true,
-    "editor.formatOnSave": true
+    "editor.formatOnSave": true,
+    "editor.acceptSuggestionOnEnter": "off"
 }
